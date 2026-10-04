@@ -5,11 +5,9 @@ SoCSE, RV University Bengaluru · Summer Internship 2025
 """
 
 import streamlit as st
-AB2DETECT — Hallucination Detection System
-Abubakar Khan (1RUA24CSE0010) · Abhishek D Nagoor (1RUA24CSE0009)
-SoCSE, RV University Bengaluru · Summer Internship 2025
-"""
-
+# AB2DETECT - Hallucination Detection System
+# Abubakar Khan (1RUA24CSE0010) - Abhishek D Nagoor (1RUA24CSE0009)
+# SoCSE, RV University Bengaluru - Summer Internship 2025
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
