@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AB2DETECT</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500&display=swap');
+
+  :root {
+    --ink: #060A10; --surface: #0F1520; --edge: #1A2535;
+    --edge2: #252840; --mist: #8892B0; --fog: #5C6E82;
+    --snow: #EEF2F8; --red: #DC3545; --green: #1A7F4B;
+    --indigo: #5B5FEF; --mono: 'IBM Plex Mono', monospace;
+    --sans: 'IBM Plex Sans', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    width: 360px; min-height: 420px;
+    background: var(--ink); color: var(--snow);
+    font-family: var(--sans); font-size: 13px;
+  }
+
+  header {
+    background: var(--surface); border-bottom: 1px solid var(--edge);
+    padding: 12px 16px; display: flex; align-items: center; gap: 10px;
+  }
+  .logo {
+    font-family: var(--mono); font-weight: 600;
+    font-size: 0.95rem; color: var(--snow);
+  }
+  .logo-sub { font-size: 0.7rem; color: var(--fog); font-family: var(--sans); }
+
+  .status-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--fog); margin-left: auto;
+  }
+  .status-dot.ok { background: var(--green); }
+  .status-dot.err { background: var(--red); }
+
+  main { padding: 14px 16px; }
+
+  label {
+    font-family: var(--mono); font-size: 0.72rem;
+    color: var(--fog); display: block; margin-bottom: 4px; margin-top: 10px;
+  }
+  label:first-child { margin-top: 0; }
+
+  textarea, input[type="text"] {
+    width: 100%; background: var(--surface);
+    border: 1px solid var(--edge); border-radius: 3px;
+    color: var(--snow); font-family: var(--sans); font-size: 0.82rem;
+    padding: 8px 10px; resize: vertical; outline: none;
+  }
+  textarea:focus, input[type="text"]:focus { border-color: var(--indigo); }
+  textarea { min-height: 70px; }
+
+  button {
+    width: 100%; margin-top: 12px;
+    background: var(--indigo); color: #fff;
+    border: none; border-radius: 3px; padding: 9px;
+    font-family: var(--mono); font-size: 0.82rem; font-weight: 500;
+    cursor: pointer; transition: opacity 0.15s;
+  }
+  button:hover { opacity: 0.88; }
+  button:disabled { background: var(--edge2); color: var(--fog); cursor: not-allowed; }
+
+  #result { margin-top: 14px; }
+
+  .verdict {
+    font-family: var(--mono); font-size: 0.85rem; font-weight: 600;
+    padding: 8px 12px; border-radius: 3px; margin-bottom: 8px;
+  }
+  .verdict.hall { background: rgba(220,53,69,0.14); color: #F4A0A8; border: 1px solid rgba(220,53,69,0.3); }
+  .verdict.ok   { background: rgba(26,127,75,0.12); color: #5FCA8E; border: 1px solid rgba(26,127,75,0.3); }
+
+  .meta {
+    font-family: var(--mono); font-size: 0.72rem; color: var(--fog);
+    margin-bottom: 8px;
+  }
+
+  .spans-label { font-family: var(--mono); font-size: 0.72rem; color: var(--fog); margin-bottom: 4px; }
+  .span-chip {
+    display: inline-block; background: rgba(220,53,69,0.14);
+    border: 1px solid rgba(220,53,69,0.3); border-radius: 3px;
+    padding: 2px 8px; font-family: var(--mono); font-size: 0.72rem;
+    color: #F4A0A8; margin: 2px 3px 2px 0;
+  }
+
+  .answer-box {
+    background: var(--surface); border: 1px solid var(--edge);
+    border-left: 2px solid var(--indigo); border-radius: 3px;
+    padding: 8px 10px; font-size: 0.82rem; line-height: 1.7;
+    color: var(--snow); margin-top: 8px; word-break: break-word;
+  }
+  .w-hall { color: #F4A0A8; text-decoration: underline wavy #DC3545; }
+
+  .error { color: #F4A0A8; font-family: var(--mono); font-size: 0.78rem; margin-top: 8px; }
+
+  footer {
+    border-top: 1px solid var(--edge); padding: 8px 16px;
+    font-family: var(--mono); font-size: 0.67rem; color: var(--fog);
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <div class="logo">AB2DETECT</div>
+    <div class="logo-sub">Hallucination Detection</div>
+  </div>
+  <div class="status-dot" id="status-dot" title="Backend status"></div>
+</header>
+
+<main>
+  <label for="ctx">Context</label>
+  <textarea id="ctx" placeholder="Paste the retrieved passage…"></textarea>
+
+  <label for="ans">LLM Answer</label>
+  <textarea id="ans" placeholder="Paste the AI-generated answer to check…"></textarea>
+
+  <button id="detect-btn" onclick="runDetect()">Run Detection</button>
+
+  <div id="result"></div>
+</main>
+
+<footer>AB2DETECT · Abubakar Khan &amp; Abhishek D Nagoor · RV University 2025</footer>
+
+<script src="popup.js"></script>
+</body>
+</html>

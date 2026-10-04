@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "AB2DETECT",
+  "version": "1.0.0",
+  "description": "Token-level hallucination detection for LLM outputs. Built by Abubakar Khan & Abhishek D Nagoor, RV University.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://localhost:8000/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "AB2DETECT"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

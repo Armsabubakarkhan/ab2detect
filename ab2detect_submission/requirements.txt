@@ -1,0 +1,28 @@
+# AB2DETECT — Python Dependencies
+# Abubakar Khan (1RUA24CSE0010) · Abhishek D Nagoor (1RUA24CSE0009)
+# SoCSE, RV University Bengaluru · Summer Internship 2025
+
+# ── Frontend ──────────────────────────────────────────────────────────────────
+streamlit>=1.32.0
+plotly>=5.18.0
+pandas>=2.0.0
+Pillow>=10.0.0
+
+# ── Backend ───────────────────────────────────────────────────────────────────
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.0.0
+requests>=2.31.0
+
+# ── OCR ───────────────────────────────────────────────────────────────────────
+easyocr>=1.7.0
+
+# ── ML (uncomment when deploying with real ModernBERT) ───────────────────────
+# torch>=2.2.0
+# transformers>=4.40.0
+# accelerate>=0.27.0
+# datasets>=2.18.0
+
+# ── Dev / Testing ─────────────────────────────────────────────────────────────
+pytest>=7.0.0
+httpx>=0.27.0
