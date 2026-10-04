@@ -65,6 +65,163 @@ st.markdown("""
 html, body, [class*="css"] { font-family: var(--sans); background: var(--ink); color: var(--snow); }
 * { box-sizing: border-box; }
 
+/* ── 3D HERO CANVAS ── */
+#ab2-hero-canvas {
+    position: relative; width: 100%; height: 260px;
+    overflow: hidden; border-radius: 8px;
+    margin-bottom: 1.5rem;
+    background: radial-gradient(ellipse at 60% 40%, rgba(91,95,239,0.18) 0%, transparent 70%),
+                radial-gradient(ellipse at 20% 80%, rgba(220,53,69,0.10) 0%, transparent 60%),
+                var(--surface);
+    border: 1px solid var(--edge);
+}
+#ab2-hero-canvas canvas { position: absolute; inset: 0; }
+.ab2-hero-text {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 0.5rem;
+    pointer-events: none; z-index: 2;
+    text-align: center; padding: 0 1rem;
+}
+.ab2-hero-title {
+    font-family: var(--mono); font-size: 2.8rem; font-weight: 600;
+    color: var(--snow); letter-spacing: -0.03em; line-height: 1;
+    text-shadow: 0 0 40px rgba(91,95,239,0.6), 0 0 80px rgba(91,95,239,0.25);
+    animation: hero-glow 3s ease-in-out infinite alternate;
+}
+@keyframes hero-glow {
+    from { text-shadow: 0 0 30px rgba(91,95,239,0.5), 0 0 60px rgba(91,95,239,0.2); }
+    to   { text-shadow: 0 0 60px rgba(91,95,239,0.9), 0 0 120px rgba(91,95,239,0.4), 0 2px 0 rgba(220,53,69,0.3); }
+}
+.ab2-hero-sub {
+    font-family: var(--sans); font-size: 0.92rem; color: var(--mist);
+    letter-spacing: 0.04em; text-transform: uppercase;
+}
+.ab2-hero-badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: rgba(91,95,239,0.15); border: 1px solid rgba(91,95,239,0.4);
+    border-radius: 20px; padding: 4px 14px;
+    font-family: var(--mono); font-size: 0.72rem; color: #9EA1F5;
+}
+.ab2-hero-badge::before {
+    content: ''; width: 6px; height: 6px; border-radius: 50%;
+    background: #5B5FEF; box-shadow: 0 0 8px #5B5FEF;
+    animation: dot-pulse 1.8s ease-in-out infinite;
+}
+@keyframes dot-pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.5;transform:scale(0.7)} }
+
+/* ── 3D TILE CARDS ── */
+.ab2-tile {
+    background: var(--surface); border: 1px solid var(--edge); border-radius: 8px;
+    padding: 1.2rem 1.4rem; margin-bottom: 1rem;
+    transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
+    transform-style: preserve-3d; perspective: 800px;
+    cursor: default;
+}
+.ab2-tile:hover {
+    transform: translateY(-4px) rotateX(3deg) rotateY(-2deg);
+    box-shadow: 0 16px 40px rgba(0,0,0,0.5), 0 0 20px rgba(91,95,239,0.15);
+    border-color: rgba(91,95,239,0.45);
+}
+.ab2-tile-title { font-family: var(--mono); font-weight: 500; font-size: 0.92rem; color: var(--snow); margin-bottom: 0.4rem; }
+.ab2-tile-body { font-family: var(--sans); font-size: 0.83rem; color: var(--mist); line-height: 1.65; }
+
+/* ── 3D METRIC CARDS ── */
+.ab2-met {
+    background: var(--surface); border: 1px solid var(--edge); border-radius: 8px;
+    padding: 1.1rem 1.2rem; text-align: left;
+    transition: transform 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease;
+    position: relative; overflow: hidden;
+}
+.ab2-met::before {
+    content: ''; position: absolute; inset: 0;
+    background: linear-gradient(135deg, rgba(91,95,239,0.06) 0%, transparent 60%);
+    opacity: 0; transition: opacity 0.3s;
+}
+.ab2-met:hover { transform: translateY(-6px) scale(1.02); border-color: rgba(91,95,239,0.5); box-shadow: 0 20px 50px rgba(0,0,0,0.5), 0 0 30px rgba(91,95,239,0.2); }
+.ab2-met:hover::before { opacity: 1; }
+.ab2-met-val {
+    font-family: var(--mono); font-size: 1.6rem; font-weight: 600; color: var(--snow); display: block;
+    background: linear-gradient(135deg, #fff 0%, #9EA1F5 100%);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+}
+.ab2-met-lbl { font-family: var(--sans); font-size: 0.8rem; color: var(--fog); margin-top: 2px; }
+
+/* ── 3D PERSON CARDS ── */
+.ab2-person {
+    background: var(--surface); border: 1px solid var(--edge); border-radius: 8px;
+    padding: 1.3rem 1.5rem;
+    transition: transform 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease;
+    position: relative; overflow: hidden;
+}
+.ab2-person::after {
+    content: ''; position: absolute; top: -50%; right: -50%;
+    width: 120px; height: 120px; border-radius: 50%;
+    background: radial-gradient(circle, rgba(91,95,239,0.12), transparent 70%);
+    transition: opacity 0.3s; opacity: 0;
+}
+.ab2-person:hover { transform: translateY(-5px) rotateY(3deg); box-shadow: 0 18px 45px rgba(0,0,0,0.5), 0 0 25px rgba(91,95,239,0.15); border-color: rgba(91,95,239,0.4); }
+.ab2-person:hover::after { opacity: 1; }
+.ab2-person-name { font-family: var(--mono); font-weight: 600; font-size: 1rem; color: var(--snow); }
+.ab2-person-role { font-family: var(--sans); font-size: 0.82rem; color: var(--fog); margin-top: 3px; }
+
+/* ── FLOATING PARTICLES ── */
+.ab2-particle {
+    position: fixed; border-radius: 50%; pointer-events: none; z-index: 0;
+    animation: float-particle linear infinite;
+    opacity: 0;
+}
+@keyframes float-particle {
+    0%   { transform: translateY(100vh) scale(0); opacity: 0; }
+    10%  { opacity: 0.6; }
+    90%  { opacity: 0.2; }
+    100% { transform: translateY(-10vh) scale(1); opacity: 0; }
+}
+
+/* ── 3D STEP LIST ── */
+.ab2-steps { margin: 0.8rem 0; padding: 0; list-style: none; }
+.ab2-step {
+    display: flex; gap: 1rem; align-items: flex-start;
+    padding: 0.75rem 0.8rem; border-bottom: 1px solid var(--edge);
+    border-radius: 4px; margin-bottom: 2px;
+    transition: background 0.2s, transform 0.2s;
+}
+.ab2-step:hover { background: var(--lift); transform: translateX(4px); }
+.ab2-step:last-child { border-bottom: none; }
+.ab2-step-num { font-family: var(--mono); font-size: 0.78rem; color: var(--indigo); min-width: 2rem; padding-top: 1px; }
+.ab2-step-text { font-family: var(--sans); font-size: 0.88rem; color: var(--mist); line-height: 1.6; }
+
+/* ── SCAN LINE EFFECT on answer box ── */
+.ab2-answer-box {
+    background: var(--ink); border: 1px solid var(--edge);
+    border-left: 2.5px solid var(--indigo); border-radius: 4px;
+    padding: 1.1rem 1.3rem; font-family: var(--sans); font-size: 0.93rem;
+    line-height: 1.8; color: var(--snow); margin: 0.75rem 0;
+    position: relative; overflow: hidden;
+}
+.ab2-answer-box::after {
+    content: ''; position: absolute; left: 0; top: -100%;
+    width: 100%; height: 2px;
+    background: linear-gradient(90deg, transparent, rgba(91,95,239,0.5), transparent);
+    animation: scan-line 3s linear infinite;
+}
+@keyframes scan-line { to { top: 200%; } }
+
+/* ── TERMINAL 3D DEPTH ── */
+.ab2-term {
+    background: #080C14; border: 1px solid var(--edge); border-radius: 8px;
+    padding: 1.1rem 1.3rem; font-family: var(--mono); font-size: 0.83rem;
+    line-height: 1.75; color: var(--mist); overflow-x: auto;
+    box-shadow: inset 0 2px 20px rgba(0,0,0,0.5), 0 0 0 1px rgba(91,95,239,0.1);
+    position: relative;
+}
+.ab2-term::before {
+    content: '● ● ●'; position: absolute; top: 10px; left: 14px;
+    font-size: 0.6rem; color: rgba(255,255,255,0.15); letter-spacing: 4px;
+}
+.ab2-term .t-prompt { color: var(--indigo); }
+.ab2-term .t-hall { color: #F4A0A8; text-decoration: underline; }
+
+
 .skip-link {
     position: fixed; top: -999px; left: 12px;
     background: var(--indigo); color: #fff;
@@ -469,11 +626,134 @@ page = st.session_state.page
 # HOME
 # ─────────────────────────────────────────────────────────────────────────────
 if page == "Home":
-    st.markdown('<div class="ab2-h1">AB2DETECT</div>', unsafe_allow_html=True)
-    st.markdown('<div class="ab2-sub">Span-level hallucination detection for RAG systems · SoCSE, RV University · Summer Internship 2025</div>', unsafe_allow_html=True)
-
+    # ── 3D ANIMATED HERO ──────────────────────────────────────────────────────
     st.markdown("""
-    <div class="ab2-term">
+    <div id="ab2-hero-canvas">
+      <canvas id="ab2-three"></canvas>
+      <div class="ab2-hero-text">
+        <div class="ab2-hero-title">AB2DETECT</div>
+        <div class="ab2-hero-sub">Span-Level Hallucination Detection · ModernBERT · RAG</div>
+        <div class="ab2-hero-badge">68.2 F1 on RAGTruth · 10× faster than GPT-4 · ~150ms</div>
+      </div>
+    </div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+    (function() {
+      var canvas = document.getElementById('ab2-three');
+      if (!canvas || typeof THREE === 'undefined') return;
+      var container = document.getElementById('ab2-hero-canvas');
+      var W = container.offsetWidth, H = container.offsetHeight;
+
+      var renderer = new THREE.WebGLRenderer({canvas: canvas, alpha: true, antialias: true});
+      renderer.setSize(W, H); renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+      var scene = new THREE.Scene();
+      var camera = new THREE.PerspectiveCamera(60, W/H, 0.1, 1000);
+      camera.position.z = 5;
+
+      // Floating token nodes (spheres)
+      var nodes = [], edges = [];
+      var nodeGeom = new THREE.SphereGeometry(0.06, 12, 12);
+      var colors = [0x5B5FEF, 0xDC3545, 0x1A7F4B, 0x9EA1F5, 0xF4A0A8];
+      for (var i = 0; i < 55; i++) {
+        var mat = new THREE.MeshBasicMaterial({color: colors[i % colors.length], transparent: true, opacity: 0.75});
+        var mesh = new THREE.Mesh(nodeGeom, mat);
+        mesh.position.set((Math.random()-0.5)*9, (Math.random()-0.5)*5, (Math.random()-0.5)*4);
+        mesh.userData = {
+          vx: (Math.random()-0.5)*0.006,
+          vy: (Math.random()-0.5)*0.006,
+          vz: (Math.random()-0.5)*0.003,
+          phase: Math.random()*Math.PI*2
+        };
+        scene.add(mesh); nodes.push(mesh);
+      }
+
+      // Connection lines between nearby nodes
+      var lineMat = new THREE.LineBasicMaterial({color: 0x5B5FEF, transparent: true, opacity: 0.12});
+      for (var j = 0; j < nodes.length; j++) {
+        for (var k = j+1; k < nodes.length; k++) {
+          if (nodes[j].position.distanceTo(nodes[k].position) < 2.2) {
+            var pts = [nodes[j].position, nodes[k].position];
+            var lg = new THREE.BufferGeometry().setFromPoints(pts);
+            var line = new THREE.Line(lg, lineMat.clone());
+            line.userData = {a: j, b: k};
+            scene.add(line); edges.push(line);
+          }
+        }
+      }
+
+      // Central glowing ring
+      var ringGeom = new THREE.TorusGeometry(1.1, 0.012, 8, 80);
+      var ringMat = new THREE.MeshBasicMaterial({color: 0x5B5FEF, transparent: true, opacity: 0.45});
+      var ring = new THREE.Mesh(ringGeom, ringMat);
+      ring.rotation.x = Math.PI * 0.25;
+      scene.add(ring);
+
+      var ring2Geom = new THREE.TorusGeometry(1.6, 0.008, 8, 80);
+      var ring2Mat = new THREE.MeshBasicMaterial({color: 0xDC3545, transparent: true, opacity: 0.22});
+      var ring2 = new THREE.Mesh(ring2Geom, ring2Mat);
+      ring2.rotation.x = -Math.PI * 0.35; ring2.rotation.z = Math.PI * 0.1;
+      scene.add(ring2);
+
+      var t = 0;
+      function animate() {
+        requestAnimationFrame(animate); t += 0.012;
+        ring.rotation.y = t * 0.4; ring.rotation.z = t * 0.15;
+        ring2.rotation.y = -t * 0.25; ring2.rotation.x = -Math.PI*0.35 + Math.sin(t*0.3)*0.1;
+
+        nodes.forEach(function(n, i) {
+          n.position.x += n.userData.vx;
+          n.position.y += n.userData.vy + Math.sin(t + n.userData.phase)*0.003;
+          n.position.z += n.userData.vz;
+          if (Math.abs(n.position.x) > 5) n.userData.vx *= -1;
+          if (Math.abs(n.position.y) > 3) n.userData.vy *= -1;
+          if (Math.abs(n.position.z) > 2.5) n.userData.vz *= -1;
+          n.material.opacity = 0.4 + 0.35*Math.sin(t*0.8 + n.userData.phase);
+        });
+
+        edges.forEach(function(line) {
+          var pa = nodes[line.userData.a].position, pb = nodes[line.userData.b].position;
+          var dist = pa.distanceTo(pb);
+          line.material.opacity = dist < 2.2 ? (1 - dist/2.2) * 0.18 : 0;
+          var pts = [pa.clone(), pb.clone()];
+          line.geometry.setFromPoints(pts);
+        });
+
+        camera.position.x = Math.sin(t*0.08)*0.4;
+        camera.position.y = Math.cos(t*0.06)*0.2;
+        camera.lookAt(scene.position);
+        renderer.render(scene, camera);
+      }
+      animate();
+
+      window.addEventListener('resize', function() {
+        W = container.offsetWidth; H = container.offsetHeight;
+        renderer.setSize(W, H); camera.aspect = W/H; camera.updateProjectionMatrix();
+      });
+    })();
+    </script>
+
+    <script>
+    /* Floating background particles */
+    (function() {
+      for (var i = 0; i < 18; i++) {
+        var p = document.createElement('div');
+        p.className = 'ab2-particle';
+        var sz = 2 + Math.random()*4;
+        var hue = Math.random() < 0.6 ? '91,95,239' : '220,53,69';
+        p.style.cssText = 'width:'+sz+'px;height:'+sz+'px;left:'+(Math.random()*100)+'vw;'
+          +'background:rgba('+hue+',0.7);'
+          +'animation-duration:'+(12+Math.random()*18)+'s;'
+          +'animation-delay:'+(Math.random()*12)+'s;';
+        document.body.appendChild(p);
+      }
+    })();
+    </script>
+    """, unsafe_allow_html=True)
+
+    # ── Terminal demo ────────────────────────────────────────────────────────
+    st.markdown("""
+    <div class="ab2-term" style="padding-top:2rem">
     <div><span class="t-prompt">context </span> Australia won the 2023 ICC World Cup at Narendra Modi Stadium. Travis Head was Player of the Match.</div>
     <div style="margin-top:4px"><span class="t-prompt">question</span> Which team won the 2023 Cricket World Cup?</div>
     <div style="margin-top:4px"><span class="t-prompt">answer  </span> <span class="t-hall">India</span> won the 2023 Cricket World Cup, defeating Australia at <span class="t-hall">Mumbai</span>. <span class="t-hall">Virat Kohli</span> was Player of the Match.</div>
