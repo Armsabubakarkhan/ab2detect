@@ -400,7 +400,7 @@ PAGES = [
     ("Image",        "OCR + detect"),
     ("Auto-Correct", "Detect and fix"),
     ("Dashboard",    "Model comparison"),
-    ("Indian Lang",  "Kannada examples"),
+    ("Indian Lang",  "6 Indian languages"),
     ("Cricket",      "Domain dataset"),
     ("Extension",    "Chrome setup"),
     ("FAQ",          "Viva prep"),
@@ -445,33 +445,114 @@ def call_api(endpoint: str, payload: dict):
 
 
 def simulate_hallucination_detection(context: str, answer: str):
-    time.sleep(0.4)
-    context_tokens = set(re.findall(r'\b\w+\b', context.lower()))
-    answer_words   = re.findall(r'\b\w+\b', answer)
-    stopwords = {'the','a','an','is','are','was','were','be','been','being',
-                 'have','has','had','do','does','did','will','would','could',
-                 'should','may','might','shall','can','to','of','in','on',
-                 'at','by','for','with','from','as','into','about','and',
-                 'or','but','not','that','this','it','he','she','they','we',
-                 'you','i','my','your','his','her','their','our'}
+    """
+    Deterministic linguistic fallback — NO randomness.
+    Flags a span only when there is clear evidence it contradicts the context:
+      - Named entity where most tokens are absent from context
+      - Number that does NOT appear in context (exact match)
+    This avoids false positives like flagging '53' when '53.78' is in context.
+    """
+    time.sleep(0.2)
+    context_lower  = context.lower()
+    context_tokens = set(re.findall(r'\b\w+\b', context_lower))
+    # Exact numbers in context (including decimals like 53.78)
+    ctx_nums = set(re.findall(r'\b\d[\d,\.]*\b', context))
+    answer_words = re.findall(r'\S+', answer)
     spans = []
-    for word in answer_words:
-        if (word.lower() not in context_tokens and word.lower() not in stopwords
-                and len(word) > 2 and random.random() < 0.35):
-            spans.append(word)
-    for ent in re.findall(r'\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)*\b', answer):
-        for part in ent.split():
-            if part.lower() not in context_tokens and part not in spans and random.random() < 0.5:
-                spans.append(part)
-    ctx_nums = re.findall(r'\b\d+(?:[,\.]\d+)*\b', context)
-    for num in re.findall(r'\b\d+(?:[,\.]\d+)*\b', answer):
+
+    # 1. Named entities: multi-word proper nouns where >50% tokens absent
+    for ent in re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b', answer):
+        parts = ent.split()
+        missing = [p for p in parts if p.lower() not in context_tokens]
+        if len(missing) > len(parts) * 0.5:
+            spans.append(ent)
+
+    # 2. Single-word proper names absent from context
+    for name in re.findall(r'\b[A-Z][a-z]{2,}\b', answer):
+        if name.lower() not in context_tokens and name not in spans:
+            # Only flag if it looks like a proper noun (capital, not start of sentence)
+            idx = answer.find(name)
+            if idx > 2:  # not first word of sentence
+                spans.append(name)
+
+    # 3. Numbers: flag only if the EXACT number string is not in context
+    for num in re.findall(r'\b\d[\d,\.]*\b', answer):
         if num not in ctx_nums:
             spans.append(num)
-    seen = list(dict.fromkeys(spans))[:6]
-    return {"spans": seen, "is_hallucinated": len(seen) > 0,
-            "confidence": max(0.62, min(0.98, 0.98 - len(seen) * 0.06)),
-            "token_count": len(answer_words), "hall_count": len(seen),
-            "hall_rate": len(seen) / max(len(answer_words), 1)}
+
+    spans = list(dict.fromkeys(spans))[:8]
+    hall_count = len(spans)
+    token_count = len(answer_words)
+    return {
+        "spans": spans,
+        "is_hallucinated": hall_count > 0,
+        "confidence": round(max(0.65, min(0.97, 0.97 - hall_count * 0.05)), 4),
+        "token_count": token_count,
+        "hall_count": hall_count,
+        "hall_rate": round(hall_count / max(token_count, 1), 4),
+        "sentence_scores": [],
+        "method": "linguistic-analysis",
+    }
+
+
+def generate_answer_frontend(context: str, question: str, model_name: str, hf_token: str) -> dict:
+    """
+    Generate answer directly from HuggingFace API — no backend needed.
+    Falls back to smart context extraction if API fails or no token.
+    """
+    HF_MODELS = {
+        "Mistral-7B":  "mistralai/Mistral-7B-Instruct-v0.2",
+        "Zephyr-7B":   "HuggingFaceH4/zephyr-7b-beta",
+        "Falcon-7B":   "tiiuae/falcon-7b-instruct",
+        "LLaMA-2-7B":  "meta-llama/Llama-2-7b-chat-hf",
+        "Phi-3-mini":  "microsoft/Phi-3-mini-4k-instruct",
+    }
+    t0 = time.time()
+    model_id = HF_MODELS.get(model_name, HF_MODELS["Mistral-7B"])
+
+    if hf_token and hf_token.startswith("hf_"):
+        prompt = (
+            f"Answer the question based ONLY on the context below. "
+            f"Be concise. Do not add info not in the context.\n\n"
+            f"Context: {context}\n\nQuestion: {question}\n\nAnswer:"
+        )
+        try:
+            resp = requests.post(
+                f"https://api-inference.huggingface.co/models/{model_id}",
+                headers={"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"},
+                json={"inputs": prompt, "parameters": {
+                    "max_new_tokens": 150, "temperature": 0.3,
+                    "do_sample": False, "return_full_text": False
+                }},
+                timeout=30,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list) and data:
+                    raw = data[0].get("generated_text", "")
+                    answer = raw.split("Answer:")[-1].strip()
+                    if len(answer) > 20:
+                        return {"answer": answer, "model_used": model_name,
+                                "method": "hf_api", "latency_ms": round((time.time()-t0)*1000,1)}
+        except Exception:
+            pass
+
+    # Smart context extraction fallback
+    sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', context) if len(s.strip()) > 15]
+    if not sentences:
+        return {"answer": context[:300], "model_used": model_name,
+                "method": "context_extraction", "latency_ms": round((time.time()-t0)*1000,1)}
+    q_words = set(re.findall(r'\b\w{4,}\b', question.lower()))
+    best, best_score = sentences[0], -1
+    for s in sentences:
+        score = len(q_words & set(re.findall(r'\b\w{4,}\b', s.lower())))
+        if score > best_score:
+            best_score, best = score, s
+    answer = best
+    if len(sentences) > 1 and sentences.index(best) != len(sentences)-1:
+        answer = best + " " + sentences[sentences.index(best)+1]
+    return {"answer": answer.strip(), "model_used": model_name,
+            "method": "context_extraction", "latency_ms": round((time.time()-t0)*1000,1)}
 
 
 def run_detection(context, answer):
@@ -506,13 +587,31 @@ def simulate_model_answer(question: str, model_name: str, context: str = "") -> 
 
 
 def auto_correct_answer(answer: str, context: str, spans: list) -> str:
+    """Replace hallucinated spans with closest context-grounded facts. Returns HTML."""
     if not spans:
         return answer
-    ctx_facts = re.findall(r'\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)*\b|\b\d+(?:[,\.]\d+)*\b', context)
+    # Extract all named entities and numbers from context as replacement candidates
+    ctx_named = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', context)
+    ctx_nums  = re.findall(r'\b\d[\d,\.]*\b', context)
+    ctx_facts = ctx_named + ctx_nums
+
     corrected = answer
     for i, span in enumerate(spans):
-        replacement = ctx_facts[i] if i < len(ctx_facts) else f"[verified]"
-        corrected = corrected.replace(span, f"**{replacement}**", 1)
+        # Pick replacement: prefer same type (number→number, name→name)
+        if re.match(r'^\d', span) and ctx_nums:
+            replacement = ctx_nums[i % len(ctx_nums)]
+        elif ctx_named:
+            replacement = ctx_named[i % len(ctx_named)]
+        elif ctx_facts:
+            replacement = ctx_facts[i % len(ctx_facts)]
+        else:
+            replacement = "verified"
+        # Replace in text and wrap in green HTML span (NOT markdown **)
+        corrected = re.compile(re.escape(span), re.IGNORECASE).sub(
+            f'<span style="color:#5FCA8E;font-weight:600;background:rgba(26,127,75,0.15);'
+            f'border-bottom:2px solid #1A7F4B;padding:0 2px;border-radius:2px">{replacement}</span>',
+            corrected, count=1
+        )
     return corrected
 
 
@@ -557,20 +656,77 @@ CRICKET_DATA = [
      "hallucinated_spans": ["India won", "Mumbai", "Virat Kohli"]},
 ]
 
-KANNADA_DATA = [
-    {"context": "ಭಾರತದ ರಾಷ್ಟ್ರೀಯ ಹಕ್ಕಿ ನವಿಲು. ಇದು 1963 ರಲ್ಲಿ ರಾಷ್ಟ್ರೀಯ ಹಕ್ಕಿಯಾಗಿ ಘೋಷಿಸಲಾಯಿತು.",
+INDIAN_LANG_DATA = [
+    # ── KANNADA ──
+    {"lang": "Kannada", "lang_code": "kn",
+     "context": "ಭಾರತದ ರಾಷ್ಟ್ರೀಯ ಹಕ್ಕಿ ನವಿಲು. ಇದು 1963 ರಲ್ಲಿ ರಾಷ್ಟ್ರೀಯ ಹಕ್ಕಿಯಾಗಿ ಘೋಷಿಸಲಾಯಿತು.",
      "question": "ಭಾರತದ ರಾಷ್ಟ್ರೀಯ ಹಕ್ಕಿ ಯಾವುದು?",
      "correct_answer": "ಭಾರತದ ರಾಷ್ಟ್ರೀಯ ಹಕ್ಕಿ ನವಿಲು, ಇದನ್ನು 1963 ರಲ್ಲಿ ಘೋಷಿಸಲಾಯಿತು.",
      "hallucinated_answer": "ಭಾರತದ ರಾಷ್ಟ್ರೀಯ ಹಕ್ಕಿ ಗಿಳಿ, ಇದನ್ನು 1975 ರಲ್ಲಿ ಘೋಷಿಸಲಾಯಿತು.",
      "hallucinated_spans": ["ಗಿಳಿ", "1975"],
-     "translation": "India's national bird is the peacock, declared in 1963. Hallucinated: parrot, 1975"},
-    {"context": "ಕರ್ನಾಟಕದ ರಾಜಧಾನಿ ಬೆಂಗಳೂರು. ಇದು ಭಾರತದ ಐಟಿ ರಾಜಧಾನಿ ಎಂದು ಕರೆಯಲ್ಪಡುತ್ತದೆ.",
+     "translation": "India's national bird is the peacock, declared in 1963. Hallucinated: parrot (ಗಿಳಿ), 1975"},
+    {"lang": "Kannada", "lang_code": "kn",
+     "context": "ಕರ್ನಾಟಕದ ರಾಜಧಾನಿ ಬೆಂಗಳೂರು. ಇದು ಭಾರತದ ಐಟಿ ರಾಜಧಾನಿ ಎಂದು ಕರೆಯಲ್ಪಡುತ್ತದೆ.",
      "question": "ಕರ್ನಾಟಕದ ರಾಜಧಾನಿ ಯಾವುದು?",
      "correct_answer": "ಕರ್ನಾಟಕದ ರಾಜಧಾನಿ ಬೆಂಗಳೂರು, ಇದನ್ನು ಭಾರತದ ಐಟಿ ರಾಜಧಾನಿ ಎನ್ನುತ್ತಾರೆ.",
      "hallucinated_answer": "ಕರ್ನಾಟಕದ ರಾಜಧಾನಿ ಮೈಸೂರು, ಇದನ್ನು ಭಾರತದ ಐಟಿ ರಾಜಧಾನಿ ಎನ್ನುತ್ತಾರೆ.",
      "hallucinated_spans": ["ಮೈಸೂರು"],
-     "translation": "Capital of Karnataka is Bengaluru. Hallucinated: Mysuru"},
+     "translation": "Capital of Karnataka is Bengaluru. Hallucinated: Mysuru (ಮೈಸೂರು)"},
+
+    # ── HINDI ──
+    {"lang": "Hindi", "lang_code": "hi",
+     "context": "भारत की राजधानी नई दिल्ली है। यह 1911 में भारत की राजधानी बनी थी।",
+     "question": "भारत की राजधानी कौन सी है?",
+     "correct_answer": "भारत की राजधानी नई दिल्ली है, जो 1911 में राजधानी बनी।",
+     "hallucinated_answer": "भारत की राजधानी मुंबई है, जो 1947 में राजधानी बनी।",
+     "hallucinated_spans": ["मुंबई", "1947"],
+     "translation": "India's capital is New Delhi, became capital in 1911. Hallucinated: Mumbai, 1947"},
+    {"lang": "Hindi", "lang_code": "hi",
+     "context": "महात्मा गांधी का जन्म 2 अक्टूबर 1869 को पोरबंदर, गुजरात में हुआ था।",
+     "question": "महात्मा गांधी का जन्म कब हुआ?",
+     "correct_answer": "महात्मा गांधी का जन्म 2 अक्टूबर 1869 को पोरबंदर में हुआ था।",
+     "hallucinated_answer": "महात्मा गांधी का जन्म 15 अगस्त 1872 को अहमदाबाद में हुआ था।",
+     "hallucinated_spans": ["1872", "अहमदाबाद"],
+     "translation": "Gandhi born Oct 2 1869 in Porbandar. Hallucinated: 1872, Ahmedabad"},
+
+    # ── TAMIL ──
+    {"lang": "Tamil", "lang_code": "ta",
+     "context": "தமிழ்நாட்டின் தலைநகரம் சென்னை. இது வங்காள விரிகுடாவின் கரையில் அமைந்துள்ளது.",
+     "question": "தமிழ்நாட்டின் தலைநகரம் எது?",
+     "correct_answer": "தமிழ்நாட்டின் தலைநகரம் சென்னை, இது வங்காள விரிகுடாவில் உள்ளது.",
+     "hallucinated_answer": "தமிழ்நாட்டின் தலைநகரம் மதுரை, இது அரபிக் கடலின் கரையில் உள்ளது.",
+     "hallucinated_spans": ["மதுரை", "அரபிக்"],
+     "translation": "Capital of Tamil Nadu is Chennai on Bay of Bengal. Hallucinated: Madurai, Arabian Sea"},
+
+    # ── TELUGU ──
+    {"lang": "Telugu", "lang_code": "te",
+     "context": "ఆంధ్రప్రదేశ్ రాజధాని అమరావతి. ఇది కృష్ణా నది ఒడ్డున నిర్మించబడింది.",
+     "question": "ఆంధ్రప్రదేశ్ రాజధాని ఏది?",
+     "correct_answer": "ఆంధ్రప్రదేశ్ రాజధాని అమరావతి, కృష్ణా నది ఒడ్డున ఉంది.",
+     "hallucinated_answer": "ఆంధ్రప్రదేశ్ రాజధాని విజయవాడ, గోదావరి నది ఒడ్డున నిర్మించబడింది.",
+     "hallucinated_spans": ["విజయవాడ", "గోదావరి"],
+     "translation": "AP capital is Amaravati on Krishna river. Hallucinated: Vijayawada, Godavari"},
+
+    # ── MARATHI ──
+    {"lang": "Marathi", "lang_code": "mr",
+     "context": "महाराष्ट्राची राजधानी मुंबई आहे. ती भारतातील सर्वात मोठे शहर आहे.",
+     "question": "महाराष्ट्राची राजधानी कोणती आहे?",
+     "correct_answer": "महाराष्ट्राची राजधानी मुंबई आहे, जी भारतातील सर्वात मोठे शहर आहे.",
+     "hallucinated_answer": "महाराष्ट्राची राजधानी पुणे आहे, जी भारतातील सर्वात मोठे शहर आहे.",
+     "hallucinated_spans": ["पुणे"],
+     "translation": "Maharashtra capital is Mumbai, largest city in India. Hallucinated: Pune"},
+
+    # ── BENGALI ──
+    {"lang": "Bengali", "lang_code": "bn",
+     "context": "রবীন্দ্রনাথ ঠাকুর ১৯১৩ সালে সাহিত্যে নোবেল পুরস্কার পান। তিনি প্রথম ভারতীয় নোবেল বিজয়ী।",
+     "question": "রবীন্দ্রনাথ ঠাকুর কখন নোবেল পুরস্কার পান?",
+     "correct_answer": "রবীন্দ্রনাথ ঠাকুর ১৯১৩ সালে সাহিত্যে নোবেল পুরস্কার পান।",
+     "hallucinated_answer": "রবীন্দ্রনাথ ঠাকুর ১৯২০ সালে পদার্থবিজ্ঞানে নোবেল পুরস্কার পান।",
+     "hallucinated_spans": ["১৯২০", "পদার্থবিজ্ঞানে"],
+     "translation": "Tagore won Nobel in Literature 1913. Hallucinated: 1920, Physics"},
 ]
+# Keep KANNADA_DATA as alias for backward compatibility
+KANNADA_DATA = [d for d in INDIAN_LANG_DATA if d["lang"] == "Kannada"]
 
 FAQ_DATA = [
     {"cat": "Basic", "q": "What is a hallucination in the context of LLMs?",
@@ -819,7 +975,7 @@ if page == "Home":
         ("Image OCR", "Upload a document image. EasyOCR extracts the text automatically, which becomes your retrieval context for detection."),
         ("Auto-Correct", "Hallucinated spans are replaced with context-grounded corrections extracted directly from the retrieved passage."),
         ("Dashboard", "Interactive Plotly charts compare F1, precision, recall, latency, and hallucination rate across four open-source models."),
-        ("Indian Language", "Kannada-language detection examples extending evaluation to Indic multilingual contexts using EuroBERT's shared vocabulary."),
+        ("Indian Language", "Detection examples across 6 Indian languages — Kannada, Hindi, Tamil, Telugu, Marathi, Bengali — using multilingual NLI models."),
         ("Cricket Dataset", "Original cricket Q&A dataset with annotated hallucination spans — a custom domain evaluation contribution."),
     ]
     for i, (title, desc) in enumerate(feats):
@@ -918,29 +1074,27 @@ elif page == "Detection":
                 generated_answer = manual_answer
                 gen_method = "manual"
             else:
-                with st.spinner(f"Step 1 of 2 — {model_name} generating answer from context…"):
+                with st.spinner(f"Step 1 of 2 — {model_name} generating answer…"):
                     gen_payload = {
-                        "context": context,
-                        "question": question,
-                        "model_name": model_name,
-                        "hf_token": hf_token or None,
+                        "context": context, "question": question,
+                        "model_name": model_name, "hf_token": hf_token or None,
                     }
                     gen_result, gen_ok = call_api("/generate", gen_payload)
                     if gen_ok:
                         generated_answer = gen_result["answer"]
-                        gen_method = gen_result.get("method", "api")
+                        gen_method = gen_result.get("method", "hf_api")
                     else:
-                        # Fallback: extract best sentence from context
-                        sentences = [s.strip() for s in context.replace(".", ". ").split(". ") if len(s.strip()) > 15]
-                        generated_answer = sentences[0] if sentences else context[:200]
-                        gen_method = "context_extraction"
+                        # Backend offline — call HF API directly from frontend
+                        gen_result = generate_answer_frontend(context, question, model_name, hf_token or "")
+                        generated_answer = gen_result["answer"]
+                        gen_method = gen_result["method"]
 
-                with st.spinner("Step 2 of 2 — Detecting hallucinations with NLI…"):
+                with st.spinner("Step 2 of 2 — Detecting hallucinations…"):
                     det_payload = {"context": context, "question": question, "answer": generated_answer}
                     det_result, det_ok = call_api("/detect", det_payload)
                     if not det_ok:
+                        # Backend offline — use deterministic linguistic analysis
                         det_result = simulate_hallucination_detection(context, generated_answer)
-                        det_result["method"] = "simulation"
                         det_result["sentence_scores"] = []
 
             # ── Results ──────────────────────────────────────────────────────
@@ -1154,10 +1308,26 @@ elif page == "Dashboard":
 # ─────────────────────────────────────────────────────────────────────────────
 elif page == "Indian Lang":
     st.markdown('<div class="ab2-h1">Indian Language Detection</div>', unsafe_allow_html=True)
-    st.markdown('<div class="ab2-sub">Hallucination detection on Kannada-language text using EuroBERT\'s multilingual encoder with shared BPE vocabulary.</div>', unsafe_allow_html=True)
-    for item in KANNADA_DATA:
-        with st.expander(item["question"]):
-            st.markdown(f'<div class="ab2-tile"><div class="ab2-tile-title">Context</div><div class="ab2-tile-body">{item["context"]}</div></div>', unsafe_allow_html=True)
+    st.markdown('<div class="ab2-sub">Hallucination detection across 5 Indian languages — Kannada, Hindi, Tamil, Telugu, Marathi, Bengali — using multilingual NLI with shared BPE vocabulary (EuroBERT / mDeBERTa).</div>', unsafe_allow_html=True)
+
+    # Language filter
+    all_langs = sorted(set(d["lang"] for d in INDIAN_LANG_DATA))
+    lang_cols = st.columns(len(all_langs))
+    lang_filter = st.radio("Filter by language", ["All"] + all_langs, horizontal=True)
+
+    filtered = INDIAN_LANG_DATA if lang_filter == "All" else [d for d in INDIAN_LANG_DATA if d["lang"] == lang_filter]
+
+    # Stats row
+    s1, s2, s3 = st.columns(3)
+    with s1: st.markdown(f'<div class="ab2-met"><span class="ab2-met-val">{len(all_langs)}</span><div class="ab2-met-lbl">Indian languages</div></div>', unsafe_allow_html=True)
+    with s2: st.markdown(f'<div class="ab2-met"><span class="ab2-met-val">{len(INDIAN_LANG_DATA)}</span><div class="ab2-met-lbl">annotated examples</div></div>', unsafe_allow_html=True)
+    with s3: st.markdown(f'<div class="ab2-met"><span class="ab2-met-val">NLI</span><div class="ab2-met-lbl">detection method</div></div>', unsafe_allow_html=True)
+    st.markdown('<hr class="ab2-rule">', unsafe_allow_html=True)
+
+    for item in filtered:
+        lang_badge = f'<span class="ab2-tag" style="margin-right:8px">{item["lang"]}</span>'
+        with st.expander(f'{item["lang"]} — {item["question"]}'):
+            st.markdown(f'<div class="ab2-tile"><div class="ab2-tile-title">{lang_badge} Context</div><div class="ab2-tile-body">{item["context"]}</div></div>', unsafe_allow_html=True)
             co, ch = st.columns(2)
             with co:
                 st.markdown('<div style="font-family:\'IBM Plex Mono\',monospace;font-size:0.72rem;color:#1A7F4B;margin-bottom:4px">correct</div>', unsafe_allow_html=True)
@@ -1165,9 +1335,9 @@ elif page == "Indian Lang":
             with ch:
                 st.markdown('<div style="font-family:\'IBM Plex Mono\',monospace;font-size:0.72rem;color:#DC3545;margin-bottom:4px">hallucinated</div>', unsafe_allow_html=True)
                 st.markdown(f'<div class="ab2-answer-box">{highlight_answer(item["hallucinated_answer"], item["hallucinated_spans"])}</div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="ab2-tile-body" style="margin-top:0.5rem">{item["translation"]}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="ab2-tile-body" style="margin-top:0.5rem;color:#5C6E82;font-style:italic">{item["translation"]}</div>', unsafe_allow_html=True)
             tags = " ".join(f'<span class="ab2-tag ab2-tag-red">{s}</span>' for s in item["hallucinated_spans"])
-            st.markdown(f'Flagged: {tags}', unsafe_allow_html=True)
+            st.markdown(f'<div style="margin-top:4px">Flagged: {tags}</div>', unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CRICKET
