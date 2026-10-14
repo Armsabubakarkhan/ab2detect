@@ -848,60 +848,182 @@ if page == "Home":
     """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DETECTION
+# DETECTION  — Full RAG Pipeline
 # ─────────────────────────────────────────────────────────────────────────────
 elif page == "Detection":
-    st.markdown('<div class="ab2-h1">Core Detection</div>', unsafe_allow_html=True)
-    st.markdown('<div class="ab2-sub">Provide a context, question, and LLM answer. Run token-level hallucination detection.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="ab2-h1">Full RAG Detection Pipeline</div>', unsafe_allow_html=True)
+    st.markdown('<div class="ab2-sub">Enter your context and question. The selected LLM generates an answer from the context, then AB2DETECT analyses every sentence for hallucinations using NLI.</div>', unsafe_allow_html=True)
 
-    model_name = st.selectbox("Model backbone", ["Mistral-7B", "Zephyr-7B", "Falcon-7B", "LLaMA-2-7B"])
-    col_a, col_b = st.columns(2)
-    with col_a:
-        context = st.text_area("Context", height=140,
-            value="Sachin Tendulkar scored 15,921 runs in Test cricket across 200 Test matches with a batting average of 53.78. He made his international debut in 1989 against Pakistan at the age of 16.")
-        question = st.text_input("Question", value="How many Test runs did Sachin Tendulkar score?")
-    with col_b:
-        answer = st.text_area("LLM answer", height=140,
-            value="Sachin Tendulkar scored 18,000 runs in Test cricket across 220 matches with a batting average of 61.5, debuting in 1987.")
+    # ── Mode selector ──────────────────────────────────────────────────────────
+    mode = st.radio(
+        "Mode",
+        ["Full Pipeline (auto-generate answer)", "Manual (paste your own answer)"],
+        horizontal=True,
+    )
 
-    gc, dc = st.columns(2)
-    with gc:
-        if st.button("Generate answer from model"):
-            with st.spinner("Generating…"):
-                st.session_state["gen_answer"] = simulate_model_answer(question, model_name, context)
-            st.rerun()
-    with dc:
-        run = st.button("Run detection")
+    # ── Inputs ─────────────────────────────────────────────────────────────────
+    model_name = st.selectbox(
+        "LLM Model",
+        ["Mistral-7B", "Zephyr-7B", "Falcon-7B", "LLaMA-2-7B", "Phi-3-mini"],
+        help="Model used to generate the answer from context",
+    )
 
-    if "gen_answer" in st.session_state:
-        st.info(f"Generated: {st.session_state['gen_answer']}")
+    context = st.text_area(
+        "Context (retrieved document / knowledge base passage)",
+        height=150,
+        value="Sachin Tendulkar scored 15,921 runs in Test cricket across 200 Test matches with a batting average of 53.78. He made his international debut in 1989 against Pakistan at the age of 16.",
+        placeholder="Paste your retrieval context here…",
+    )
 
-    if run:
-        if not context or not answer:
-            st.warning("Provide both context and answer.")
+    question = st.text_input(
+        "Question",
+        value="How many Test runs did Sachin Tendulkar score?",
+        placeholder="What do you want to ask about the context?",
+    )
+
+    # Manual mode: user pastes an LLM answer
+    manual_answer = ""
+    if "Manual" in mode:
+        manual_answer = st.text_area(
+            "LLM Answer to check",
+            height=120,
+            placeholder="Paste the LLM-generated answer here…",
+        )
+
+    # Optional HF token for real LLM generation
+    with st.expander("Optional: HuggingFace token for real LLM generation"):
+        hf_token = st.text_input(
+            "HuggingFace Token (get free at huggingface.co/settings/tokens)",
+            type="password",
+            help="Without a token, context extraction is used to generate the answer.",
+        )
+        st.markdown('<div class="ab2-tile-body">Without a token the system extracts the most relevant sentence from context as the answer. With a free HF token it calls the real LLM via API.</div>', unsafe_allow_html=True)
+    else:
+        hf_token = ""
+
+    run_btn = st.button("Run Full Pipeline", type="primary", use_container_width=True)
+
+    if run_btn:
+        if not context.strip() or not question.strip():
+            st.warning("Please provide both a context and a question.")
         else:
-            with st.spinner("Running ModernBERT token classification…"):
-                result = run_detection(context, answer)
+            # ── Step 1: Generate or use manual answer ────────────────────────
+            if "Manual" in mode and manual_answer.strip():
+                with st.spinner("Running hallucination detection…"):
+                    det_payload = {"context": context, "question": question, "answer": manual_answer}
+                    det_result, det_ok = call_api("/detect", det_payload)
+                    if not det_ok:
+                        det_result = simulate_hallucination_detection(context, manual_answer)
+                        det_result["method"] = "simulation"
+                        det_result["sentence_scores"] = []
 
+                generated_answer = manual_answer
+                gen_method = "manual"
+            else:
+                with st.spinner(f"Step 1 of 2 — {model_name} generating answer from context…"):
+                    gen_payload = {
+                        "context": context,
+                        "question": question,
+                        "model_name": model_name,
+                        "hf_token": hf_token or None,
+                    }
+                    gen_result, gen_ok = call_api("/generate", gen_payload)
+                    if gen_ok:
+                        generated_answer = gen_result["answer"]
+                        gen_method = gen_result.get("method", "api")
+                    else:
+                        # Fallback: extract best sentence from context
+                        sentences = [s.strip() for s in context.replace(".", ". ").split(". ") if len(s.strip()) > 15]
+                        generated_answer = sentences[0] if sentences else context[:200]
+                        gen_method = "context_extraction"
+
+                with st.spinner("Step 2 of 2 — Detecting hallucinations with NLI…"):
+                    det_payload = {"context": context, "question": question, "answer": generated_answer}
+                    det_result, det_ok = call_api("/detect", det_payload)
+                    if not det_ok:
+                        det_result = simulate_hallucination_detection(context, generated_answer)
+                        det_result["method"] = "simulation"
+                        det_result["sentence_scores"] = []
+
+            # ── Results ──────────────────────────────────────────────────────
             st.markdown('<hr class="ab2-rule">', unsafe_allow_html=True)
-            r1, r2, r3, r4 = st.columns(4)
-            sc = "#DC3545" if result["is_hallucinated"] else "#1A7F4B"
-            sv = "Hallucinated" if result["is_hallucinated"] else "Supported"
-            with r1: st.markdown(f'<div class="ab2-met"><span class="ab2-met-val" style="color:{sc}">{sv}</span><div class="ab2-met-lbl">verdict</div></div>', unsafe_allow_html=True)
-            with r2: st.markdown(f'<div class="ab2-met"><span class="ab2-met-val">{result["confidence"]:.2f}</span><div class="ab2-met-lbl">confidence</div></div>', unsafe_allow_html=True)
-            with r3: st.markdown(f'<div class="ab2-met"><span class="ab2-met-val">{result["hall_count"]}</span><div class="ab2-met-lbl">flagged spans</div></div>', unsafe_allow_html=True)
-            with r4: st.markdown(f'<div class="ab2-met"><span class="ab2-met-val">{result["token_count"]}</span><div class="ab2-met-lbl">total tokens</div></div>', unsafe_allow_html=True)
 
-            st.markdown(f'<div class="ab2-answer-box">{highlight_answer(answer, result["spans"])}</div>', unsafe_allow_html=True)
+            # Generated answer display
+            st.markdown('<div class="ab2-h2">Generated Answer</div>', unsafe_allow_html=True)
+            method_badge = det_result.get("method", "nli")
+            gen_badge = gen_method
+            st.markdown(
+                f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:0.7rem;color:#5C6E82;margin-bottom:6px">'
+                f'model: {model_name} &nbsp;·&nbsp; generation: {gen_badge} &nbsp;·&nbsp; detection: {method_badge}'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                f'<div class="ab2-answer-box">{highlight_answer(generated_answer, det_result.get("spans", []))}</div>',
+                unsafe_allow_html=True,
+            )
 
-            if result["spans"]:
-                tags = " ".join(f'<span class="ab2-tag ab2-tag-red">{s}</span>' for s in result["spans"])
-                st.markdown(f'<div style="margin-bottom:1rem">Flagged: {tags}</div>', unsafe_allow_html=True)
+            # ── Metrics ──────────────────────────────────────────────────────
+            is_hall = det_result.get("is_hallucinated", False)
+            confidence = det_result.get("confidence", 0.0)
+            hall_count = det_result.get("hall_count", 0)
+            token_count = det_result.get("token_count", 0)
+            hall_rate = det_result.get("hall_rate", 0.0)
+            spans = det_result.get("spans", [])
 
-            with st.expander("Token breakdown"):
-                rows = [{"token": t, "label": 1 if any(s.lower() in t.lower() for s in result["spans"]) else 0}
-                        for t in re.findall(r'\S+', answer)]
-                st.dataframe(pd.DataFrame(rows), use_container_width=True, height=200)
+            hall_pct = round(hall_rate * 100, 1)
+            sc = "#DC3545" if is_hall else "#1A7F4B"
+            sv = "HALLUCINATED" if is_hall else "SUPPORTED"
+
+            r1, r2, r3, r4, r5 = st.columns(5)
+            with r1:
+                st.markdown(f'<div class="ab2-met"><span class="ab2-met-val" style="color:{sc};font-size:1rem">{sv}</span><div class="ab2-met-lbl">verdict</div></div>', unsafe_allow_html=True)
+            with r2:
+                st.markdown(f'<div class="ab2-met"><span class="ab2-met-val">{confidence:.0%}</span><div class="ab2-met-lbl">confidence</div></div>', unsafe_allow_html=True)
+            with r3:
+                st.markdown(f'<div class="ab2-met"><span class="ab2-met-val" style="color:#DC3545">{hall_pct}%</span><div class="ab2-met-lbl">hallucinated</div></div>', unsafe_allow_html=True)
+            with r4:
+                st.markdown(f'<div class="ab2-met"><span class="ab2-met-val">{hall_count}</span><div class="ab2-met-lbl">flagged spans</div></div>', unsafe_allow_html=True)
+            with r5:
+                st.markdown(f'<div class="ab2-met"><span class="ab2-met-val">{token_count}</span><div class="ab2-met-lbl">total tokens</div></div>', unsafe_allow_html=True)
+
+            # ── Flagged spans ─────────────────────────────────────────────────
+            if spans:
+                st.markdown('<div class="ab2-h2">Hallucinated Spans</div>', unsafe_allow_html=True)
+                tags = " ".join(f'<span class="ab2-tag ab2-tag-red">{s}</span>' for s in spans)
+                st.markdown(f'<div style="margin-bottom:1rem">{tags}</div>', unsafe_allow_html=True)
+            else:
+                st.success("No hallucinations detected — answer is fully grounded in context.")
+
+            # ── Sentence-level breakdown ──────────────────────────────────────
+            sentence_scores = det_result.get("sentence_scores", [])
+            if sentence_scores:
+                st.markdown('<div class="ab2-h2">Sentence-Level Analysis</div>', unsafe_allow_html=True)
+                for ss in sentence_scores:
+                    verdict = ss.get("verdict", "uncertain")
+                    color = "#DC3545" if verdict == "hallucinated" else ("#1A7F4B" if verdict == "supported" else "#8892B0")
+                    contra = ss.get("contradiction", 0)
+                    entail = ss.get("entailment", 0)
+                    st.markdown(
+                        f'<div class="ab2-tile" style="margin-bottom:0.5rem;border-left:3px solid {color}">'
+                        f'<div class="ab2-tile-body">{ss["sentence"]}</div>'
+                        f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:0.7rem;color:{color};margin-top:6px">'
+                        f'{verdict.upper()} &nbsp;·&nbsp; entailment: {entail:.0%} &nbsp;·&nbsp; contradiction: {contra:.0%}'
+                        f'</div></div>',
+                        unsafe_allow_html=True,
+                    )
+
+            # ── Token breakdown table ─────────────────────────────────────────
+            with st.expander("Token-level breakdown"):
+                rows = [
+                    {
+                        "token": t,
+                        "label": 1 if any(s.lower() in t.lower() for s in spans) else 0,
+                        "status": "hallucinated" if any(s.lower() in t.lower() for s in spans) else "supported",
+                    }
+                    for t in re.findall(r'\S+', generated_answer)
+                ]
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, height=220)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # IMAGE
