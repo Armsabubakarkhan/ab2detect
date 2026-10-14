@@ -898,8 +898,6 @@ elif page == "Detection":
             help="Without a token, context extraction is used to generate the answer.",
         )
         st.markdown('<div class="ab2-tile-body">Without a token the system extracts the most relevant sentence from context as the answer. With a free HF token it calls the real LLM via API.</div>', unsafe_allow_html=True)
-    else:
-        hf_token = ""
 
     run_btn = st.button("Run Full Pipeline", type="primary", use_container_width=True)
 
