@@ -1142,6 +1142,9 @@ elif page == "Detection":
         st.session_state["det_question"] = ""
     if "det_result" not in st.session_state:
         st.session_state["det_result"] = None
+    # Token persists across all pages and steps
+    if "shared_hf_token" not in st.session_state:
+        st.session_state["shared_hf_token"] = ""
 
     # ── Step indicator ────────────────────────────────────────────────────────
     step = st.session_state["det_step"]
@@ -1190,10 +1193,14 @@ elif page == "Detection":
 
         det_hf_token = st.text_input(
             "HuggingFace Token (hf_…)",
+            value=st.session_state.get("shared_hf_token", ""),
             type="password",
             placeholder="hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
             help="Get a free token at huggingface.co/settings/tokens → New token → Read",
         )
+        # Save token to session so it persists across pages / Start Over
+        if det_hf_token:
+            st.session_state["shared_hf_token"] = det_hf_token
 
         # Warn if user pastes wrong key
         if det_hf_token and not det_hf_token.startswith("hf_"):
@@ -1489,26 +1496,181 @@ elif page == "Image":
 # ─────────────────────────────────────────────────────────────────────────────
 elif page == "Auto-Correct":
     st.markdown('<div class="ab2-h1">Auto-Correction</div>', unsafe_allow_html=True)
-    st.markdown('<div class="ab2-sub">Detect hallucinated spans and automatically replace them with context-grounded corrections.</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="ab2-sub">Three steps: <b>Ask a question</b> → <b>LLM generates answer</b> → '
+        '<b>Paste context → detect + auto-correct hallucinations</b></div>',
+        unsafe_allow_html=True,
+    )
 
-    ctx_ac = st.text_area("Context", height=120,
-        value="Australia won the 2023 ICC Cricket World Cup held in India. They defeated India in the final played at Narendra Modi Stadium in Ahmedabad on November 19, 2023. Travis Head was named Player of the Match.")
-    ans_ac = st.text_area("LLM answer", height=100,
-        value="India won the 2023 Cricket World Cup, defeating Australia in the final at Mumbai. Virat Kohli was named Player of the Match.")
+    # ── Session state ─────────────────────────────────────────────────────────
+    if "ac_step" not in st.session_state:
+        st.session_state["ac_step"] = 1
+    if "ac_question" not in st.session_state:
+        st.session_state["ac_question"] = ""
+    if "ac_model" not in st.session_state:
+        st.session_state["ac_model"] = "Mistral-7B"
+    if "ac_answer" not in st.session_state:
+        st.session_state["ac_answer"] = ""
+    if "ac_gen_method" not in st.session_state:
+        st.session_state["ac_gen_method"] = ""
+    if "ac_result" not in st.session_state:
+        st.session_state["ac_result"] = None
+    if "ac_corrected" not in st.session_state:
+        st.session_state["ac_corrected"] = ""
 
-    if st.button("Detect and correct"):
-        with st.spinner("Running detection…"):
-            result = run_detection(ctx_ac, ans_ac)
-        corrected = auto_correct_answer(ans_ac, ctx_ac, result["spans"])
+    ac_step = st.session_state["ac_step"]
+
+    # Step indicator
+    ac_step_cols = st.columns(3)
+    ac_step_labels = ["1️⃣ Ask Question", "2️⃣ Review Answer", "3️⃣ Auto-Correct"]
+    for i, (col, lbl) in enumerate(zip(ac_step_cols, ac_step_labels)):
+        active = (i + 1 == ac_step)
+        done = (i + 1 < ac_step)
+        bg = "#1A7F4B" if done else ("#0A2540" if active else "#1C2A3A")
+        border = "2px solid #5FCA8E" if active else ("2px solid #1A7F4B" if done else "2px solid #2A3A4A")
+        col.markdown(
+            f'<div style="text-align:center;padding:10px;border-radius:8px;background:{bg};border:{border};'
+            f'font-size:0.85rem;font-weight:{"700" if active else "400"};color:{"#5FCA8E" if active else "#CDD6F4"}">'
+            f'{lbl}</div>', unsafe_allow_html=True,
+        )
+    st.markdown('<hr class="ab2-rule">', unsafe_allow_html=True)
+
+    # ── STEP 1 ────────────────────────────────────────────────────────────────
+    if ac_step == 1:
+        st.markdown('<div class="ab2-h2">Step 1 — Ask Your Question</div>', unsafe_allow_html=True)
+        ac_question = st.text_input(
+            "Your question",
+            value=st.session_state.get("ac_question", "Who won the 2023 ICC Cricket World Cup?"),
+            placeholder="Ask anything…",
+        )
+        ac_model = st.selectbox(
+            "LLM Model",
+            ["Mistral-7B", "Zephyr-7B", "Falcon-7B", "LLaMA-2-7B", "Phi-3-mini"],
+            index=["Mistral-7B", "Zephyr-7B", "Falcon-7B", "LLaMA-2-7B", "Phi-3-mini"].index(
+                st.session_state.get("ac_model", "Mistral-7B")
+            ),
+        )
+        ac_token = st.text_input(
+            "HuggingFace Token (hf_…)",
+            value=st.session_state.get("shared_hf_token", ""),
+            type="password",
+            placeholder="hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        )
+        if ac_token:
+            st.session_state["shared_hf_token"] = ac_token
+        if ac_token and not ac_token.startswith("hf_"):
+            st.error(f"❌ Token must start with `hf_` (yours starts with `{ac_token[:4]}…`). Get it from huggingface.co/settings/tokens → New token.")
+
+        if st.button("🚀 Generate Answer", type="primary", use_container_width=True):
+            if not ac_question.strip():
+                st.warning("Please enter a question.")
+            else:
+                st.session_state["ac_question"] = ac_question
+                st.session_state["ac_model"] = ac_model
+                valid_token = ac_token if (ac_token and ac_token.startswith("hf_")) else ""
+                with st.spinner(f"🤖 {ac_model} generating answer…"):
+                    gen_result, gen_ok = call_api("/generate", {
+                        "context": "", "question": ac_question,
+                        "model_name": ac_model, "hf_token": valid_token or None,
+                    })
+                    if not gen_ok:
+                        gen_result = generate_answer_frontend("", ac_question, ac_model, valid_token)
+                st.session_state["ac_answer"] = gen_result.get("answer", "")
+                st.session_state["ac_gen_method"] = gen_result.get("method", "unknown")
+                if gen_result.get("method") == "hf_api":
+                    st.success(f"✅ Answer generated by {ac_model} via HuggingFace API")
+                st.session_state["ac_step"] = 2
+                st.rerun()
+
+    # ── STEP 2 ────────────────────────────────────────────────────────────────
+    elif ac_step == 2:
+        st.markdown('<div class="ab2-h2">Step 2 — Review Answer & Paste Context</div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:0.7rem;color:#5C6E82;margin-bottom:8px">'
+            f'question: {st.session_state["ac_question"]} &nbsp;·&nbsp; model: {st.session_state["ac_model"]} &nbsp;·&nbsp; method: {st.session_state["ac_gen_method"]}'
+            f'</div>', unsafe_allow_html=True,
+        )
+        st.markdown(f'<div class="ab2-answer-box" style="margin-bottom:1rem">{st.session_state["ac_answer"]}</div>', unsafe_allow_html=True)
+
+        edited_ac = st.text_area("✏️ Edit answer if needed (optional)", value=st.session_state["ac_answer"], height=90)
+
+        st.markdown('<div class="ab2-h2" style="margin-top:1rem">Paste Context Document</div>', unsafe_allow_html=True)
+        st.markdown('<div class="ab2-tile-body" style="margin-bottom:0.8rem">Paste the real ground-truth facts. AB2DETECT will detect hallucinations, then auto-correct them.</div>', unsafe_allow_html=True)
+
+        ac_context = st.text_area(
+            "Context (ground truth / knowledge base)",
+            height=140,
+            value="Australia won the 2023 ICC Cricket World Cup held in India. They defeated India in the final played at Narendra Modi Stadium in Ahmedabad on November 19, 2023. Travis Head was named Player of the Match.",
+            placeholder="Paste the real facts here…",
+        )
+        col_b, col_d = st.columns([1, 3])
+        with col_b:
+            if st.button("← Back", use_container_width=True):
+                st.session_state["ac_step"] = 1
+                st.rerun()
+        with col_d:
+            if st.button("🔍 Detect & Auto-Correct", type="primary", use_container_width=True):
+                if not ac_context.strip():
+                    st.warning("Please paste a context document.")
+                else:
+                    final_ans = edited_ac.strip() if edited_ac.strip() else st.session_state["ac_answer"]
+                    st.session_state["ac_answer"] = final_ans
+                    st.session_state["ac_context"] = ac_context
+                    with st.spinner("🔬 Detecting hallucinations…"):
+                        det_result, det_ok = call_api("/detect", {"context": ac_context, "question": st.session_state["ac_question"], "answer": final_ans})
+                        if not det_ok:
+                            det_result = simulate_hallucination_detection(ac_context, final_ans)
+                            det_result["sentence_scores"] = []
+                    corrected = auto_correct_answer(final_ans, ac_context, det_result["spans"])
+                    st.session_state["ac_result"] = det_result
+                    st.session_state["ac_corrected"] = corrected
+                    st.session_state["ac_step"] = 3
+                    st.rerun()
+
+    # ── STEP 3 ────────────────────────────────────────────────────────────────
+    elif ac_step == 3:
+        st.markdown('<div class="ab2-h2">Step 3 — Detection & Auto-Correction Results</div>', unsafe_allow_html=True)
+        det_result = st.session_state["ac_result"]
+        spans = det_result.get("spans", [])
+        ac_answer = st.session_state["ac_answer"]
+        ac_corrected = st.session_state["ac_corrected"]
+
+        st.markdown(
+            f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:0.7rem;color:#5C6E82;margin-bottom:12px">'
+            f'question: {st.session_state["ac_question"]} &nbsp;·&nbsp; model: {st.session_state["ac_model"]} &nbsp;·&nbsp; '
+            f'{len(spans)} hallucinated span(s) detected &nbsp;·&nbsp; detection: {det_result.get("method","simulation")}'
+            f'</div>', unsafe_allow_html=True,
+        )
+
         co, cc = st.columns(2)
         with co:
-            st.markdown('<div style="font-family:\'IBM Plex Mono\',monospace;font-size:0.72rem;color:#DC3545;margin-bottom:4px">original</div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="ab2-answer-box">{highlight_answer(ans_ac, result["spans"])}</div>', unsafe_allow_html=True)
+            st.markdown('<div style="font-family:\'IBM Plex Mono\',monospace;font-size:0.72rem;color:#DC3545;margin-bottom:4px">❌ original (hallucinations highlighted)</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="ab2-answer-box">{highlight_answer(ac_answer, spans)}</div>', unsafe_allow_html=True)
         with cc:
-            st.markdown('<div style="font-family:\'IBM Plex Mono\',monospace;font-size:0.72rem;color:#1A7F4B;margin-bottom:4px">corrected</div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="ab2-answer-box" style="border-left-color:#1A7F4B">{corrected}</div>', unsafe_allow_html=True)
-        if result["spans"]:
-            st.markdown(f'<div style="font-family:\'IBM Plex Sans\',sans-serif;font-size:0.82rem;color:#5C6E82;margin-top:0.5rem">{len(result["spans"])} span(s) corrected using context-grounded extraction</div>', unsafe_allow_html=True)
+            st.markdown('<div style="font-family:\'IBM Plex Mono\',monospace;font-size:0.72rem;color:#1A7F4B;margin-bottom:4px">✅ auto-corrected (grounded in context)</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="ab2-answer-box" style="border-left-color:#1A7F4B">{ac_corrected}</div>', unsafe_allow_html=True)
+
+        # Metrics
+        hall_pct = round(det_result.get("hall_rate", 0) * 100, 1)
+        sc = "#DC3545" if det_result.get("is_hallucinated") else "#1A7F4B"
+        m1, m2, m3, m4 = st.columns(4)
+        with m1: st.markdown(f'<div class="ab2-met"><span class="ab2-met-val" style="color:{sc}">{"HALLUCINATED" if det_result.get("is_hallucinated") else "SUPPORTED"}</span><div class="ab2-met-lbl">verdict</div></div>', unsafe_allow_html=True)
+        with m2: st.markdown(f'<div class="ab2-met"><span class="ab2-met-val" style="color:#DC3545">{hall_pct}%</span><div class="ab2-met-lbl">hallucinated</div></div>', unsafe_allow_html=True)
+        with m3: st.markdown(f'<div class="ab2-met"><span class="ab2-met-val">{len(spans)}</span><div class="ab2-met-lbl">spans corrected</div></div>', unsafe_allow_html=True)
+        with m4: st.markdown(f'<div class="ab2-met"><span class="ab2-met-val">{det_result.get("confidence",0):.0%}</span><div class="ab2-met-lbl">confidence</div></div>', unsafe_allow_html=True)
+
+        if spans:
+            st.markdown('<div class="ab2-h2" style="margin-top:0.5rem">Corrected Spans</div>', unsafe_allow_html=True)
+            tags = " ".join(f'<span class="ab2-tag ab2-tag-red">{s}</span>' for s in spans)
+            st.markdown(f'<div style="margin-bottom:1rem">{tags}</div>', unsafe_allow_html=True)
+        else:
+            st.success("No hallucinations detected — answer is fully grounded in context.")
+
+        st.markdown('<hr class="ab2-rule">', unsafe_allow_html=True)
+        if st.button("🔄 Start Over — Ask a New Question", use_container_width=True):
+            for k in ["ac_step","ac_question","ac_model","ac_answer","ac_gen_method","ac_result","ac_corrected","ac_context"]:
+                st.session_state.pop(k, None)
+            st.rerun()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DASHBOARD
@@ -1569,36 +1731,231 @@ elif page == "Dashboard":
 # ─────────────────────────────────────────────────────────────────────────────
 elif page == "Indian Lang":
     st.markdown('<div class="ab2-h1">Indian Language Detection</div>', unsafe_allow_html=True)
-    st.markdown('<div class="ab2-sub">Hallucination detection across 5 Indian languages — Kannada, Hindi, Tamil, Telugu, Marathi, Bengali — using multilingual NLI with shared BPE vocabulary (EuroBERT / mDeBERTa).</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="ab2-sub">Three steps: <b>Ask a question in any Indian language</b> → <b>LLM generates answer</b> → '
+        '<b>Paste context → detect hallucinations</b>. Supports Kannada, Hindi, Tamil, Telugu, Marathi, Bengali.</div>',
+        unsafe_allow_html=True,
+    )
 
-    # Language filter
-    all_langs = sorted(set(d["lang"] for d in INDIAN_LANG_DATA))
-    lang_cols = st.columns(len(all_langs))
-    lang_filter = st.radio("Filter by language", ["All"] + all_langs, horizontal=True)
+    # ── Session state ─────────────────────────────────────────────────────────
+    if "il_step" not in st.session_state:
+        st.session_state["il_step"] = 1
+    if "il_question" not in st.session_state:
+        st.session_state["il_question"] = ""
+    if "il_lang" not in st.session_state:
+        st.session_state["il_lang"] = "Kannada"
+    if "il_model" not in st.session_state:
+        st.session_state["il_model"] = "Mistral-7B"
+    if "il_answer" not in st.session_state:
+        st.session_state["il_answer"] = ""
+    if "il_gen_method" not in st.session_state:
+        st.session_state["il_gen_method"] = ""
+    if "il_result" not in st.session_state:
+        st.session_state["il_result"] = None
 
-    filtered = INDIAN_LANG_DATA if lang_filter == "All" else [d for d in INDIAN_LANG_DATA if d["lang"] == lang_filter]
+    il_step = st.session_state["il_step"]
 
-    # Stats row
-    s1, s2, s3 = st.columns(3)
-    with s1: st.markdown(f'<div class="ab2-met"><span class="ab2-met-val">{len(all_langs)}</span><div class="ab2-met-lbl">Indian languages</div></div>', unsafe_allow_html=True)
-    with s2: st.markdown(f'<div class="ab2-met"><span class="ab2-met-val">{len(INDIAN_LANG_DATA)}</span><div class="ab2-met-lbl">annotated examples</div></div>', unsafe_allow_html=True)
-    with s3: st.markdown(f'<div class="ab2-met"><span class="ab2-met-val">NLI</span><div class="ab2-met-lbl">detection method</div></div>', unsafe_allow_html=True)
+    # Step indicator
+    il_cols = st.columns(3)
+    il_labels = ["1️⃣ Ask Question", "2️⃣ Review Answer", "3️⃣ Detect Hallucination"]
+    for i, (col, lbl) in enumerate(zip(il_cols, il_labels)):
+        active = (i + 1 == il_step)
+        done = (i + 1 < il_step)
+        bg = "#1A7F4B" if done else ("#0A2540" if active else "#1C2A3A")
+        border = "2px solid #5FCA8E" if active else ("2px solid #1A7F4B" if done else "2px solid #2A3A4A")
+        col.markdown(
+            f'<div style="text-align:center;padding:10px;border-radius:8px;background:{bg};border:{border};'
+            f'font-size:0.85rem;font-weight:{"700" if active else "400"};color:{"#5FCA8E" if active else "#CDD6F4"}">'
+            f'{lbl}</div>', unsafe_allow_html=True,
+        )
     st.markdown('<hr class="ab2-rule">', unsafe_allow_html=True)
 
-    for item in filtered:
-        lang_badge = f'<span class="ab2-tag" style="margin-right:8px">{item["lang"]}</span>'
-        with st.expander(f'{item["lang"]} — {item["question"]}'):
-            st.markdown(f'<div class="ab2-tile"><div class="ab2-tile-title">{lang_badge} Context</div><div class="ab2-tile-body">{item["context"]}</div></div>', unsafe_allow_html=True)
-            co, ch = st.columns(2)
-            with co:
-                st.markdown('<div style="font-family:\'IBM Plex Mono\',monospace;font-size:0.72rem;color:#1A7F4B;margin-bottom:4px">correct</div>', unsafe_allow_html=True)
-                st.markdown(f'<div class="ab2-answer-box" style="border-left-color:#1A7F4B">{item["correct_answer"]}</div>', unsafe_allow_html=True)
-            with ch:
-                st.markdown('<div style="font-family:\'IBM Plex Mono\',monospace;font-size:0.72rem;color:#DC3545;margin-bottom:4px">hallucinated</div>', unsafe_allow_html=True)
-                st.markdown(f'<div class="ab2-answer-box">{highlight_answer(item["hallucinated_answer"], item["hallucinated_spans"])}</div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="ab2-tile-body" style="margin-top:0.5rem;color:#5C6E82;font-style:italic">{item["translation"]}</div>', unsafe_allow_html=True)
-            tags = " ".join(f'<span class="ab2-tag ab2-tag-red">{s}</span>' for s in item["hallucinated_spans"])
-            st.markdown(f'<div style="margin-top:4px">Flagged: {tags}</div>', unsafe_allow_html=True)
+    # Sample questions per language for convenience
+    LANG_SAMPLES = {
+        "Kannada": "ಸಚಿನ್ ತೆಂಡೂಲ್ಕರ್ ಎಷ್ಟು ಟೆಸ್ಟ್ ರನ್ ಗಳಿಸಿದ್ದಾರೆ?",
+        "Hindi":   "भारत की राजधानी क्या है?",
+        "Tamil":   "2023 ICC உலகக் கோப்பையை யார் வென்றனர்?",
+        "Telugu":  "సచిన్ టెండూల్కర్ ఎన్ని టెస్ట్ రన్లు చేశారు?",
+        "Marathi": "2023 ICC विश्वचषक कोणी जिंकला?",
+        "Bengali": "সাচিন টেন্ডুলকার কত টেস্ট রান করেছেন?",
+    }
+
+    # ── STEP 1 ────────────────────────────────────────────────────────────────
+    if il_step == 1:
+        st.markdown('<div class="ab2-h2">Step 1 — Ask Your Question</div>', unsafe_allow_html=True)
+
+        il_lang = st.selectbox(
+            "Language",
+            ["Kannada", "Hindi", "Tamil", "Telugu", "Marathi", "Bengali"],
+            index=["Kannada", "Hindi", "Tamil", "Telugu", "Marathi", "Bengali"].index(
+                st.session_state.get("il_lang", "Kannada")
+            ),
+        )
+        sample_q = LANG_SAMPLES.get(il_lang, "")
+        st.markdown(f'<div class="ab2-tile-body" style="margin-bottom:0.5rem">Sample question in {il_lang}: <em>{sample_q}</em></div>', unsafe_allow_html=True)
+
+        il_question = st.text_input(
+            f"Your question (in {il_lang} or English)",
+            value=st.session_state.get("il_question", sample_q),
+            placeholder=sample_q,
+        )
+        il_model = st.selectbox(
+            "LLM Model",
+            ["Mistral-7B", "Zephyr-7B", "Falcon-7B", "LLaMA-2-7B", "Phi-3-mini"],
+            index=["Mistral-7B", "Zephyr-7B", "Falcon-7B", "LLaMA-2-7B", "Phi-3-mini"].index(
+                st.session_state.get("il_model", "Mistral-7B")
+            ),
+        )
+        il_token = st.text_input(
+            "HuggingFace Token (hf_…)",
+            value=st.session_state.get("shared_hf_token", ""),
+            type="password",
+            placeholder="hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        )
+        if il_token:
+            st.session_state["shared_hf_token"] = il_token
+        if il_token and not il_token.startswith("hf_"):
+            st.error(f"❌ Token must start with `hf_` (yours starts with `{il_token[:4]}…`).")
+
+        if st.button("🚀 Generate Answer", type="primary", use_container_width=True):
+            if not il_question.strip():
+                st.warning("Please enter a question.")
+            else:
+                st.session_state["il_question"] = il_question
+                st.session_state["il_lang"] = il_lang
+                st.session_state["il_model"] = il_model
+                valid_token = il_token if (il_token and il_token.startswith("hf_")) else ""
+                with st.spinner(f"🤖 {il_model} generating answer…"):
+                    gen_result, gen_ok = call_api("/generate", {
+                        "context": "", "question": il_question,
+                        "model_name": il_model, "hf_token": valid_token or None,
+                    })
+                    if not gen_ok:
+                        gen_result = generate_answer_frontend("", il_question, il_model, valid_token)
+                st.session_state["il_answer"] = gen_result.get("answer", "")
+                st.session_state["il_gen_method"] = gen_result.get("method", "unknown")
+                if gen_result.get("method") == "hf_api":
+                    st.success(f"✅ Answer generated by {il_model} via HuggingFace API")
+                st.session_state["il_step"] = 2
+                st.rerun()
+
+    # ── STEP 2 ────────────────────────────────────────────────────────────────
+    elif il_step == 2:
+        st.markdown('<div class="ab2-h2">Step 2 — LLM Answer Generated</div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:0.7rem;color:#5C6E82;margin-bottom:8px">'
+            f'lang: {st.session_state["il_lang"]} &nbsp;·&nbsp; question: {st.session_state["il_question"]} &nbsp;·&nbsp; '
+            f'model: {st.session_state["il_model"]} &nbsp;·&nbsp; method: {st.session_state["il_gen_method"]}'
+            f'</div>', unsafe_allow_html=True,
+        )
+        st.markdown(f'<div class="ab2-answer-box" style="margin-bottom:1rem">{st.session_state["il_answer"]}</div>', unsafe_allow_html=True)
+
+        edited_il = st.text_area("✏️ Edit answer if needed (optional)", value=st.session_state["il_answer"], height=90)
+
+        st.markdown('<div class="ab2-h2" style="margin-top:1rem">Paste Context Document</div>', unsafe_allow_html=True)
+        lang = st.session_state["il_lang"]
+        LANG_CONTEXT_SAMPLES = {
+            "Kannada": "ಸಚಿನ್ ತೆಂಡೂಲ್ಕರ್ 200 ಟೆಸ್ಟ್ ಪಂದ್ಯಗಳಲ್ಲಿ 15,921 ರನ್ ಗಳಿಸಿದ್ದಾರೆ, ಸರಾಸರಿ 53.78.",
+            "Hindi":   "भारत की राजधानी नई दिल्ली है। यह देश के उत्तरी भाग में स्थित है।",
+            "Tamil":   "2023 ICC உலகக் கோப்பையில் ஆஸ்திரேலியா இந்தியாவை இறுதியில் தோற்கடித்து வென்றது. டிராவிஸ் ஹெட் மேட்ச் ஆஃப் தி மேட்ச் விருது பெற்றார்.",
+            "Telugu":  "సచిన్ టెండూల్కర్ 200 టెస్ట్ మ్యాచ్‌లలో 15,921 రన్లు చేశారు, సగటు 53.78.",
+            "Marathi": "2023 ICC विश्वचषक ऑस्ट्रेलियाने भारताला फायनलमध्ये हरवून जिंकला. ट्रॅव्हिस हेड सामनावीर ठरला.",
+            "Bengali": "সাচিন টেন্ডুলকার ২০০ টেস্ট ম্যাচে ১৫,৯২১ রান করেছেন, গড় ৫৩.৭৮।",
+        }
+        il_context = st.text_area(
+            f"Context in {lang} (knowledge base / source)",
+            height=150,
+            value=LANG_CONTEXT_SAMPLES.get(lang, ""),
+            placeholder=f"Paste the ground-truth context in {lang} here…",
+        )
+        col_b, col_d = st.columns([1, 3])
+        with col_b:
+            if st.button("← Back", use_container_width=True):
+                st.session_state["il_step"] = 1
+                st.rerun()
+        with col_d:
+            if st.button("🔍 Detect Hallucinations", type="primary", use_container_width=True):
+                if not il_context.strip():
+                    st.warning("Please paste a context document.")
+                else:
+                    final_ans = edited_il.strip() if edited_il.strip() else st.session_state["il_answer"]
+                    st.session_state["il_answer"] = final_ans
+                    st.session_state["il_context"] = il_context
+                    with st.spinner("🔬 Detecting hallucinations…"):
+                        det_result, det_ok = call_api("/detect", {
+                            "context": il_context,
+                            "question": st.session_state["il_question"],
+                            "answer": final_ans,
+                        })
+                        if not det_ok:
+                            det_result = simulate_hallucination_detection(il_context, final_ans)
+                            det_result["sentence_scores"] = []
+                    st.session_state["il_result"] = det_result
+                    st.session_state["il_step"] = 3
+                    st.rerun()
+
+    # ── STEP 3 ────────────────────────────────────────────────────────────────
+    elif il_step == 3:
+        st.markdown('<div class="ab2-h2">Step 3 — Detection Results</div>', unsafe_allow_html=True)
+        det_result = st.session_state["il_result"]
+        spans = det_result.get("spans", [])
+        il_answer = st.session_state["il_answer"]
+        lang = st.session_state["il_lang"]
+
+        st.markdown(
+            f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:0.7rem;color:#5C6E82;margin-bottom:12px">'
+            f'lang: {lang} &nbsp;·&nbsp; model: {st.session_state["il_model"]} &nbsp;·&nbsp; '
+            f'method: {det_result.get("method","simulation")} &nbsp;·&nbsp; '
+            f'{len(spans)} hallucinated span(s)'
+            f'</div>', unsafe_allow_html=True,
+        )
+
+        # Highlighted answer
+        st.markdown('<div class="ab2-h2">Answer with Hallucinations Highlighted</div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="ab2-answer-box">{highlight_answer(il_answer, spans)}</div>',
+            unsafe_allow_html=True,
+        )
+
+        # Metrics
+        is_hall = det_result.get("is_hallucinated", False)
+        hall_pct = round(det_result.get("hall_rate", 0) * 100, 1)
+        sc = "#DC3545" if is_hall else "#1A7F4B"
+        m1, m2, m3, m4 = st.columns(4)
+        with m1: st.markdown(f'<div class="ab2-met"><span class="ab2-met-val" style="color:{sc}">{"HALLUCINATED" if is_hall else "SUPPORTED"}</span><div class="ab2-met-lbl">verdict</div></div>', unsafe_allow_html=True)
+        with m2: st.markdown(f'<div class="ab2-met"><span class="ab2-met-val" style="color:#DC3545">{hall_pct}%</span><div class="ab2-met-lbl">hallucinated</div></div>', unsafe_allow_html=True)
+        with m3: st.markdown(f'<div class="ab2-met"><span class="ab2-met-val">{len(spans)}</span><div class="ab2-met-lbl">flagged spans</div></div>', unsafe_allow_html=True)
+        with m4: st.markdown(f'<div class="ab2-met"><span class="ab2-met-val">{det_result.get("confidence",0):.0%}</span><div class="ab2-met-lbl">confidence</div></div>', unsafe_allow_html=True)
+
+        if spans:
+            st.markdown('<div class="ab2-h2">Hallucinated Spans</div>', unsafe_allow_html=True)
+            tags = " ".join(f'<span class="ab2-tag ab2-tag-red">{s}</span>' for s in spans)
+            st.markdown(f'<div style="margin-bottom:1rem">{tags}</div>', unsafe_allow_html=True)
+        else:
+            st.success("No hallucinations detected — answer is fully grounded in context.")
+
+        # Show the pre-annotated examples for this language below
+        st.markdown('<hr class="ab2-rule">', unsafe_allow_html=True)
+        st.markdown(f'<div class="ab2-h2">Annotated Examples — {lang}</div>', unsafe_allow_html=True)
+        lang_examples = [d for d in INDIAN_LANG_DATA if d["lang"] == lang]
+        if lang_examples:
+            for item in lang_examples:
+                with st.expander(f'📖 {item["question"]}'):
+                    st.markdown(f'<div class="ab2-tile"><div class="ab2-tile-title">Context</div><div class="ab2-tile-body">{item["context"]}</div></div>', unsafe_allow_html=True)
+                    co, ch = st.columns(2)
+                    with co:
+                        st.markdown('<div style="color:#1A7F4B;font-size:0.72rem;margin-bottom:4px">✅ correct</div>', unsafe_allow_html=True)
+                        st.markdown(f'<div class="ab2-answer-box" style="border-left-color:#1A7F4B">{item["correct_answer"]}</div>', unsafe_allow_html=True)
+                    with ch:
+                        st.markdown('<div style="color:#DC3545;font-size:0.72rem;margin-bottom:4px">❌ hallucinated</div>', unsafe_allow_html=True)
+                        st.markdown(f'<div class="ab2-answer-box">{highlight_answer(item["hallucinated_answer"], item["hallucinated_spans"])}</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="ab2-tile-body" style="color:#5C6E82;font-style:italic;margin-top:4px">{item["translation"]}</div>', unsafe_allow_html=True)
+
+        st.markdown('<hr class="ab2-rule">', unsafe_allow_html=True)
+        if st.button("🔄 Start Over — Ask a New Question", use_container_width=True):
+            for k in ["il_step","il_question","il_lang","il_model","il_answer","il_gen_method","il_result","il_context"]:
+                st.session_state.pop(k, None)
+            st.rerun()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CRICKET
