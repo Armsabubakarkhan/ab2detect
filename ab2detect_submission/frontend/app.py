@@ -497,8 +497,10 @@ def simulate_hallucination_detection(context: str, answer: str):
 
 def generate_answer_frontend(context: str, question: str, model_name: str, hf_token: str) -> dict:
     """
-    Generate answer directly from HuggingFace API — no backend needed.
-    Falls back to smart context extraction if API fails or no token.
+    Generate answer directly from HuggingFace Inference API.
+    - If context is a real document: answers from context (for Step 2 detection).
+    - If context is blank/placeholder: answers from model's own knowledge (Step 1 standalone).
+    Falls back to knowledge-base simulation if API unavailable.
     """
     HF_MODELS = {
         "Mistral-7B":  "mistralai/Mistral-7B-Instruct-v0.2",
@@ -507,37 +509,141 @@ def generate_answer_frontend(context: str, question: str, model_name: str, hf_to
         "LLaMA-2-7B":  "meta-llama/Llama-2-7b-chat-hf",
         "Phi-3-mini":  "microsoft/Phi-3-mini-4k-instruct",
     }
+    # These models use the chat/conversational format
+    CHAT_MODELS = {"Mistral-7B", "Zephyr-7B", "Phi-3-mini"}
+
     t0 = time.time()
     model_id = HF_MODELS.get(model_name, HF_MODELS["Mistral-7B"])
 
-    if hf_token and hf_token.startswith("hf_"):
-        prompt = (
-            f"Answer the question based ONLY on the context below. "
-            f"Be concise. Do not add info not in the context.\n\n"
-            f"Context: {context}\n\nQuestion: {question}\n\nAnswer:"
-        )
-        try:
-            resp = requests.post(
-                f"https://api-inference.huggingface.co/models/{model_id}",
-                headers={"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"},
-                json={"inputs": prompt, "parameters": {
-                    "max_new_tokens": 150, "temperature": 0.3,
-                    "do_sample": False, "return_full_text": False
-                }},
-                timeout=30,
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                if isinstance(data, list) and data:
-                    raw = data[0].get("generated_text", "")
-                    answer = raw.split("Answer:")[-1].strip()
-                    if len(answer) > 20:
-                        return {"answer": answer, "model_used": model_name,
-                                "method": "hf_api", "latency_ms": round((time.time()-t0)*1000,1)}
-        except Exception:
-            pass
+    # Decide if this is standalone (Step 1) or context-grounded (Step 2)
+    PLACEHOLDER = "Answer based on your general knowledge."
+    is_standalone = (not context.strip() or context.strip() == PLACEHOLDER)
 
-    # Smart context extraction fallback
+    if hf_token and hf_token.startswith("hf_"):
+        # ── Build prompt ──────────────────────────────────────────────────────
+        if is_standalone:
+            # No context: let the model answer from its own knowledge
+            if model_name in CHAT_MODELS:
+                prompt = f"<s>[INST] {question} [/INST]"
+            else:
+                prompt = f"Question: {question}\n\nAnswer:"
+        else:
+            # Context grounded
+            if model_name in CHAT_MODELS:
+                prompt = (
+                    f"<s>[INST] Answer the question using ONLY the context below.\n\n"
+                    f"Context: {context}\n\nQuestion: {question} [/INST]"
+                )
+            else:
+                prompt = (
+                    f"Context: {context}\n\nQuestion: {question}\n\nAnswer:"
+                )
+
+        # ── Try HF Inference API ──────────────────────────────────────────────
+        hf_error = ""
+        for attempt_model_id in [model_id, "HuggingFaceH4/zephyr-7b-beta"]:
+            try:
+                resp = requests.post(
+                    f"https://api-inference.huggingface.co/models/{attempt_model_id}",
+                    headers={"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"},
+                    json={
+                        "inputs": prompt,
+                        "parameters": {
+                            "max_new_tokens": 200,
+                            "temperature": 0.7,
+                            "do_sample": True,
+                            "return_full_text": False,
+                        },
+                        "options": {"wait_for_model": True},
+                    },
+                    timeout=45,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if isinstance(data, list) and data:
+                        raw = data[0].get("generated_text", "").strip()
+                        # Strip any re-echoed prompt fragments
+                        for marker in ["[/INST]", "Answer:", "Answer :"]:
+                            if marker in raw:
+                                raw = raw.split(marker)[-1].strip()
+                        if len(raw) > 15:
+                            used_model = model_name if attempt_model_id == model_id else "Zephyr-7B (fallback)"
+                            return {
+                                "answer": raw,
+                                "model_used": used_model,
+                                "method": "hf_api",
+                                "latency_ms": round((time.time() - t0) * 1000, 1),
+                            }
+                elif resp.status_code == 503:
+                    hf_error = "Model loading (503)"
+                    time.sleep(3)  # model cold-starting, brief wait then try fallback model
+                    continue
+                else:
+                    hf_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
+                    break
+            except requests.Timeout:
+                hf_error = "timeout"
+                break
+            except Exception as e:
+                hf_error = str(e)
+                break
+
+    # ── Knowledge-base fallback (no token or API failed) ─────────────────────
+    # For standalone mode: use a curated knowledge base of common questions
+    KNOWLEDGE_BASE = {
+        # Geography / world facts
+        "eiffel tower": "The Eiffel Tower is 330 metres (1,083 ft) tall, located in Paris, France. It was built between 1887 and 1889 as the entrance arch for the 1889 World's Fair and was designed by Gustave Eiffel.",
+        "height eiffel": "The Eiffel Tower stands 330 metres tall including its broadcast antenna. The structure itself is 300 metres.",
+        "capital france": "The capital of France is Paris.",
+        "capital india": "The capital of India is New Delhi.",
+        "capital usa": "The capital of the United States is Washington, D.C.",
+        "largest country": "Russia is the largest country in the world by land area, covering approximately 17.1 million square kilometres.",
+        "longest river": "The Nile River in Africa is traditionally considered the longest river in the world at approximately 6,650 km.",
+        # Science / tech
+        "what is ai": "Artificial Intelligence (AI) is the simulation of human intelligence processes by computer systems. It includes machine learning, natural language processing, computer vision, and expert systems. AI systems learn from data to perform tasks such as recognising speech, making decisions, translating languages, and generating text.",
+        "what is machine learning": "Machine Learning (ML) is a subset of AI where systems learn from data to improve their performance on tasks without being explicitly programmed. It includes supervised learning, unsupervised learning, and reinforcement learning.",
+        "what is deep learning": "Deep learning is a subset of machine learning that uses artificial neural networks with many layers to learn patterns from large amounts of data. It powers image recognition, speech recognition, and large language models.",
+        "what is hallucination": "In AI, hallucination refers to when a language model generates confident-sounding text that is factually incorrect or not grounded in the provided context. It is a major reliability concern in LLM-based systems.",
+        "what is llm": "A Large Language Model (LLM) is a type of AI model trained on massive text datasets to understand and generate human language. Examples include GPT-4, LLaMA, Mistral, and Gemini.",
+        # Cricket / sports
+        "sachin tendulkar": "Sachin Tendulkar is widely regarded as one of the greatest cricketers of all time. He scored 15,921 runs in Test cricket across 200 Test matches with an average of 53.78 and 51 centuries.",
+        "virat kohli": "Virat Kohli is an Indian cricketer and former captain of the Indian national team. He is one of the leading batsmen in modern cricket with over 8,000 Test runs.",
+        "ipl": "The Indian Premier League (IPL) is a professional Twenty20 cricket league in India, held annually. It was founded in 2008 by the BCCI.",
+        # History / people
+        "mahatma gandhi": "Mahatma Gandhi (1869–1948) was an Indian lawyer and activist who led India's independence movement against British rule through nonviolent civil disobedience. He is known as the Father of the Nation in India.",
+        "albert einstein": "Albert Einstein (1879–1955) was a German-born theoretical physicist who developed the theory of relativity and made major contributions to quantum mechanics. He received the Nobel Prize in Physics in 1921.",
+        "world war 2": "World War II (1939–1945) was a global conflict involving most of the world's nations. It began with Germany's invasion of Poland and ended with the Allied victory. It remains the deadliest conflict in human history with an estimated 70–85 million casualties.",
+    }
+
+    if is_standalone:
+        q_lower = question.lower()
+        best_answer = None
+        best_score = 0
+        for key, ans in KNOWLEDGE_BASE.items():
+            score = sum(1 for word in key.split() if word in q_lower)
+            if score > best_score:
+                best_score = score
+                best_answer = ans
+        if best_answer and best_score > 0:
+            return {
+                "answer": best_answer,
+                "model_used": model_name,
+                "method": "knowledge_base_fallback",
+                "latency_ms": round((time.time() - t0) * 1000, 1),
+            }
+        # Generic fallback for unknown questions
+        return {
+            "answer": (
+                f"I don't have enough information to answer '{question}' precisely without a HuggingFace token for real LLM generation. "
+                f"Please paste your `hf_` token above to get a real answer from {model_name}. "
+                f"Alternatively, in Step 2 you can manually type an answer to check for hallucinations."
+            ),
+            "model_used": model_name,
+            "method": "no_token_fallback",
+            "latency_ms": round((time.time() - t0) * 1000, 1),
+        }
+
+    # Context-grounded fallback: extract best sentence from context
     sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', context) if len(s.strip()) > 15]
     if not sentences:
         return {"answer": context[:300], "model_used": model_name,
@@ -548,9 +654,10 @@ def generate_answer_frontend(context: str, question: str, model_name: str, hf_to
         score = len(q_words & set(re.findall(r'\b\w{4,}\b', s.lower())))
         if score > best_score:
             best_score, best = score, s
+    idx = sentences.index(best)
     answer = best
-    if len(sentences) > 1 and sentences.index(best) != len(sentences)-1:
-        answer = best + " " + sentences[sentences.index(best)+1]
+    if idx + 1 < len(sentences):
+        answer = best + " " + sentences[idx + 1]
     return {"answer": answer.strip(), "model_used": model_name,
             "method": "context_extraction", "latency_ms": round((time.time()-t0)*1000,1)}
 
@@ -1107,30 +1214,41 @@ elif page == "Detection":
                 st.session_state["det_model_name"] = det_model
                 st.session_state["det_hf_token"] = det_hf_token
 
-                # Generate answer — LLM answers the question standalone (no context)
-                # We send a minimal placeholder context so the API doesn't reject it;
-                # the real detection happens in Step 3 with the user's actual context.
-                standalone_ctx = "Answer based on your general knowledge."
+                # Generate answer — LLM answers the question from its own knowledge (no context).
+                # Passing empty string triggers standalone mode in generate_answer_frontend.
+                valid_token = det_hf_token if (det_hf_token and det_hf_token.startswith("hf_")) else ""
 
-                with st.spinner(f"🤖 {det_model} is thinking…"):
-                    gen_payload = {
-                        "context": standalone_ctx,
-                        "question": det_question,
-                        "model_name": det_model,
-                        "hf_token": det_hf_token if det_hf_token.startswith("hf_") else None,
-                    }
-                    gen_result, gen_ok = call_api("/generate", gen_payload)
-                    if gen_ok:
-                        generated_answer = gen_result["answer"]
-                        gen_method = gen_result.get("method", "hf_api")
-                    else:
-                        # Backend offline — call HF API directly from frontend
-                        valid_token = det_hf_token if det_hf_token.startswith("hf_") else ""
+                with st.spinner(f"🤖 {det_model} is generating an answer…"):
+                    # Try backend first; if offline, call HF directly from frontend
+                    gen_ok = False
+                    if valid_token:
+                        gen_payload = {
+                            "context": "",   # empty = standalone, model uses its own knowledge
+                            "question": det_question,
+                            "model_name": det_model,
+                            "hf_token": valid_token,
+                        }
+                        gen_result, gen_ok = call_api("/generate", gen_payload)
+
+                    if not gen_ok:
+                        # Always use frontend HF call directly (works without backend)
                         gen_result = generate_answer_frontend(
-                            standalone_ctx, det_question, det_model, valid_token
+                            "",           # empty context = standalone mode
+                            det_question,
+                            det_model,
+                            valid_token,
                         )
-                        generated_answer = gen_result["answer"]
-                        gen_method = gen_result["method"]
+
+                    generated_answer = gen_result.get("answer", "")
+                    gen_method = gen_result.get("method", "unknown")
+
+                    # Show what method was used so user understands
+                    if gen_method == "hf_api":
+                        st.success(f"✅ Answer generated by {det_model} via HuggingFace API")
+                    elif gen_method == "knowledge_base_fallback":
+                        st.info("ℹ️ Answer from built-in knowledge base (add `hf_` token for real LLM generation)")
+                    elif gen_method == "no_token_fallback":
+                        st.warning("⚠️ No HF token provided — please add your `hf_` token above for real LLM answers")
 
                 st.session_state["det_generated_answer"] = generated_answer
                 st.session_state["det_gen_method"] = gen_method
