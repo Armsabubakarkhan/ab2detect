@@ -35,6 +35,8 @@ if "page" not in st.session_state:
     st.session_state.page = "Home"
 if "api_url" not in st.session_state:
     st.session_state.api_url = "http://localhost:8000"
+if "shared_hf_token" not in st.session_state:
+    st.session_state["shared_hf_token"] = ""
 
 # ─────────────────────────────────────────────────────────────────────────────
 # GLOBAL CSS
