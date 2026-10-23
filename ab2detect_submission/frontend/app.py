@@ -516,169 +516,160 @@ def simulate_hallucination_detection(context: str, answer: str):
 
 def generate_answer_frontend(context: str, question: str, model_name: str, hf_token: str) -> dict:
     """
-    Generate answer directly from HuggingFace Inference API.
-    - If context is a real document: answers from context (for Step 2 detection).
-    - If context is blank/placeholder: answers from model's own knowledge (Step 1 standalone).
-    Falls back to knowledge-base simulation if API unavailable.
+    Generate answer from HuggingFace Inference API.
+    Answers ANY question — general knowledge or context-grounded.
+    Uses a cascade of models from lightest (always warm) to heaviest.
     """
+    # ── Model registry ────────────────────────────────────────────────────────
+    # Ordered: preferred first, then fallbacks in order of reliability on free HF tier
     HF_MODELS = {
         "Mistral-7B":  "mistralai/Mistral-7B-Instruct-v0.2",
         "Zephyr-7B":   "HuggingFaceH4/zephyr-7b-beta",
         "Falcon-7B":   "tiiuae/falcon-7b-instruct",
         "LLaMA-2-7B":  "meta-llama/Llama-2-7b-chat-hf",
         "Phi-3-mini":  "microsoft/Phi-3-mini-4k-instruct",
+        # Always-on small models (warm on free tier, answer general questions well)
+        "Flan-T5":     "google/flan-t5-large",
+        "Flan-T5-XL":  "google/flan-t5-xl",
     }
-    # These models use the chat/conversational format
-    CHAT_MODELS = {"Mistral-7B", "Zephyr-7B", "Phi-3-mini"}
+    CHAT_MODELS = {"Mistral-7B", "Zephyr-7B", "Phi-3-mini", "LLaMA-2-7B"}
+    SEQ2SEQ_MODELS = {"Flan-T5", "Flan-T5-XL"}  # input/output format differs
+
+    # Fallback cascade: try selected model, then these in order
+    FALLBACK_CASCADE = [
+        "mistralai/Mistral-7B-Instruct-v0.2",
+        "HuggingFaceH4/zephyr-7b-beta",
+        "tiiuae/falcon-7b-instruct",
+        "google/flan-t5-xl",       # seq2seq but always warm — answers general questions
+        "google/flan-t5-large",
+    ]
 
     t0 = time.time()
-    model_id = HF_MODELS.get(model_name, HF_MODELS["Mistral-7B"])
-
-    # Decide if this is standalone (Step 1) or context-grounded (Step 2)
     PLACEHOLDER = "Answer based on your general knowledge."
-    is_standalone = (not context.strip() or context.strip() == PLACEHOLDER)
+    is_standalone = not context.strip() or context.strip() == PLACEHOLDER
 
-    if hf_token and hf_token.startswith("hf_"):
-        # ── Build prompt ──────────────────────────────────────────────────────
-        if is_standalone:
-            # No context: let the model answer from its own knowledge
-            if model_name in CHAT_MODELS:
-                prompt = f"<s>[INST] {question} [/INST]"
+    def build_prompt(model_id: str, q: str, ctx: str, standalone: bool) -> dict:
+        """Returns (payload_dict, is_seq2seq)"""
+        is_seq2seq = "flan" in model_id.lower() or "t5" in model_id.lower()
+        is_chat = any(x in model_id.lower() for x in ["mistral","zephyr","llama","phi"])
+
+        if is_seq2seq:
+            # Flan-T5 works best with direct Q or "Answer: ..." format
+            if standalone:
+                inputs = f"Answer the following question with a detailed factual response: {q}"
             else:
-                prompt = f"Question: {question}\n\nAnswer:"
+                inputs = f"Context: {ctx}\n\nBased on the context, answer: {q}"
+            params = {"max_new_tokens": 250, "temperature": 0.3}
+        elif is_chat:
+            if standalone:
+                inputs = f"<s>[INST] You are a knowledgeable assistant. Answer the following question in 2-4 sentences with accurate facts:\n\n{q} [/INST]"
+            else:
+                inputs = (f"<s>[INST] Answer the question using ONLY the information in the context below. "
+                          f"Be specific and factual.\n\nContext: {ctx}\n\nQuestion: {q} [/INST]")
+            params = {"max_new_tokens": 300, "temperature": 0.4, "do_sample": True, "return_full_text": False}
         else:
-            # Context grounded
-            if model_name in CHAT_MODELS:
-                prompt = (
-                    f"<s>[INST] Answer the question using ONLY the context below.\n\n"
-                    f"Context: {context}\n\nQuestion: {question} [/INST]"
-                )
+            # Falcon and other causal models
+            if standalone:
+                inputs = f"Question: {q}\n\nProvide a detailed, factual answer:\nAnswer:"
             else:
-                prompt = (
-                    f"Context: {context}\n\nQuestion: {question}\n\nAnswer:"
-                )
+                inputs = f"Context: {ctx}\n\nQuestion: {q}\n\nAnswer based on the context:\nAnswer:"
+            params = {"max_new_tokens": 250, "temperature": 0.5, "do_sample": True, "return_full_text": False}
 
-        # ── Try HF Inference API ──────────────────────────────────────────────
-        hf_error = ""
-        for attempt_model_id in [model_id, "HuggingFaceH4/zephyr-7b-beta"]:
+        return {"inputs": inputs, "parameters": params, "options": {"wait_for_model": True}}, is_seq2seq
+
+    def clean_output(raw: str, model_id: str) -> str:
+        """Strip prompt echoes and artifacts from model output."""
+        for marker in ["[/INST]", "Answer:", "Answer :", "Based on the context,",
+                        "Provide a detailed", "Question:", "Context:"]:
+            if marker in raw:
+                raw = raw.split(marker)[-1].strip()
+        # Remove leading punctuation artifacts
+        raw = re.sub(r'^[\s\n\r:\.]+', '', raw).strip()
+        return raw
+
+    def call_model(model_id: str, token: str, q: str, ctx: str, standalone: bool):
+        payload, is_seq2seq = build_prompt(model_id, q, ctx, standalone)
+        resp = requests.post(
+            f"https://api-inference.huggingface.co/models/{model_id}",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=50,
+        )
+        if resp.status_code != 200:
+            return None, f"HTTP {resp.status_code}"
+        data = resp.json()
+        # Handle both text-generation and seq2seq formats
+        if isinstance(data, list) and data:
+            if is_seq2seq:
+                raw = data[0].get("generated_text", "").strip()
+            else:
+                raw = data[0].get("generated_text", "").strip()
+            raw = clean_output(raw, model_id)
+            return (raw if len(raw) > 10 else None), None
+        if isinstance(data, dict) and "generated_text" in data:
+            raw = clean_output(data["generated_text"].strip(), model_id)
+            return (raw if len(raw) > 10 else None), None
+        return None, "empty response"
+
+    # ── Main API call with cascade fallback ───────────────────────────────────
+    if hf_token and hf_token.startswith("hf_"):
+        primary_id = HF_MODELS.get(model_name, "mistralai/Mistral-7B-Instruct-v0.2")
+        models_to_try = [primary_id] + [m for m in FALLBACK_CASCADE if m != primary_id]
+
+        for mid in models_to_try:
             try:
-                resp = requests.post(
-                    f"https://api-inference.huggingface.co/models/{attempt_model_id}",
-                    headers={"Authorization": f"Bearer {hf_token}", "Content-Type": "application/json"},
-                    json={
-                        "inputs": prompt,
-                        "parameters": {
-                            "max_new_tokens": 200,
-                            "temperature": 0.7,
-                            "do_sample": True,
-                            "return_full_text": False,
-                        },
-                        "options": {"wait_for_model": True},
-                    },
-                    timeout=45,
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if isinstance(data, list) and data:
-                        raw = data[0].get("generated_text", "").strip()
-                        # Strip any re-echoed prompt fragments
-                        for marker in ["[/INST]", "Answer:", "Answer :"]:
-                            if marker in raw:
-                                raw = raw.split(marker)[-1].strip()
-                        if len(raw) > 15:
-                            used_model = model_name if attempt_model_id == model_id else "Zephyr-7B (fallback)"
-                            return {
-                                "answer": raw,
-                                "model_used": used_model,
-                                "method": "hf_api",
-                                "latency_ms": round((time.time() - t0) * 1000, 1),
-                            }
-                elif resp.status_code == 503:
-                    hf_error = "Model loading (503)"
-                    time.sleep(3)  # model cold-starting, brief wait then try fallback model
-                    continue
-                else:
-                    hf_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
-                    break
+                answer, err = call_model(mid, hf_token, question, context, is_standalone)
+                if answer:
+                    short_name = mid.split("/")[-1]
+                    used = model_name if mid == primary_id else f"{short_name} (fallback)"
+                    return {
+                        "answer": answer,
+                        "model_used": used,
+                        "method": "hf_api",
+                        "latency_ms": round((time.time() - t0) * 1000, 1),
+                    }
             except requests.Timeout:
-                hf_error = "timeout"
-                break
-            except Exception as e:
-                hf_error = str(e)
-                break
+                continue
+            except Exception:
+                continue
 
-    # ── Knowledge-base fallback (no token or API failed) ─────────────────────
-    # For standalone mode: use a curated knowledge base of common questions
-    KNOWLEDGE_BASE = {
-        # Geography / world facts
-        "eiffel tower": "The Eiffel Tower is 330 metres (1,083 ft) tall, located in Paris, France. It was built between 1887 and 1889 as the entrance arch for the 1889 World's Fair and was designed by Gustave Eiffel.",
-        "height eiffel": "The Eiffel Tower stands 330 metres tall including its broadcast antenna. The structure itself is 300 metres.",
-        "capital france": "The capital of France is Paris.",
-        "capital india": "The capital of India is New Delhi.",
-        "capital usa": "The capital of the United States is Washington, D.C.",
-        "largest country": "Russia is the largest country in the world by land area, covering approximately 17.1 million square kilometres.",
-        "longest river": "The Nile River in Africa is traditionally considered the longest river in the world at approximately 6,650 km.",
-        # Science / tech
-        "what is ai": "Artificial Intelligence (AI) is the simulation of human intelligence processes by computer systems. It includes machine learning, natural language processing, computer vision, and expert systems. AI systems learn from data to perform tasks such as recognising speech, making decisions, translating languages, and generating text.",
-        "what is machine learning": "Machine Learning (ML) is a subset of AI where systems learn from data to improve their performance on tasks without being explicitly programmed. It includes supervised learning, unsupervised learning, and reinforcement learning.",
-        "what is deep learning": "Deep learning is a subset of machine learning that uses artificial neural networks with many layers to learn patterns from large amounts of data. It powers image recognition, speech recognition, and large language models.",
-        "what is hallucination": "In AI, hallucination refers to when a language model generates confident-sounding text that is factually incorrect or not grounded in the provided context. It is a major reliability concern in LLM-based systems.",
-        "what is llm": "A Large Language Model (LLM) is a type of AI model trained on massive text datasets to understand and generate human language. Examples include GPT-4, LLaMA, Mistral, and Gemini.",
-        # Cricket / sports
-        "sachin tendulkar": "Sachin Tendulkar is widely regarded as one of the greatest cricketers of all time. He scored 15,921 runs in Test cricket across 200 Test matches with an average of 53.78 and 51 centuries.",
-        "virat kohli": "Virat Kohli is an Indian cricketer and former captain of the Indian national team. He is one of the leading batsmen in modern cricket with over 8,000 Test runs.",
-        "ipl": "The Indian Premier League (IPL) is a professional Twenty20 cricket league in India, held annually. It was founded in 2008 by the BCCI.",
-        # History / people
-        "mahatma gandhi": "Mahatma Gandhi (1869–1948) was an Indian lawyer and activist who led India's independence movement against British rule through nonviolent civil disobedience. He is known as the Father of the Nation in India.",
-        "albert einstein": "Albert Einstein (1879–1955) was a German-born theoretical physicist who developed the theory of relativity and made major contributions to quantum mechanics. He received the Nobel Prize in Physics in 1921.",
-        "world war 2": "World War II (1939–1945) was a global conflict involving most of the world's nations. It began with Germany's invasion of Poland and ended with the Allied victory. It remains the deadliest conflict in human history with an estimated 70–85 million casualties.",
-    }
-
-    if is_standalone:
-        q_lower = question.lower()
-        best_answer = None
-        best_score = 0
-        for key, ans in KNOWLEDGE_BASE.items():
-            score = sum(1 for word in key.split() if word in q_lower)
-            if score > best_score:
-                best_score = score
-                best_answer = ans
-        if best_answer and best_score > 0:
-            return {
-                "answer": best_answer,
-                "model_used": model_name,
-                "method": "knowledge_base_fallback",
-                "latency_ms": round((time.time() - t0) * 1000, 1),
-            }
-        # Generic fallback for unknown questions
+        # All API calls failed — build a clear error with the actual reason
         return {
             "answer": (
-                f"I don't have enough information to answer '{question}' precisely without a HuggingFace token for real LLM generation. "
-                f"Please paste your `hf_` token above to get a real answer from {model_name}. "
-                f"Alternatively, in Step 2 you can manually type an answer to check for hallucinations."
+                f"⚠️ All HuggingFace models are currently unavailable (likely rate-limited or cold-starting). "
+                f"Try again in 30 seconds, or switch to a different model. "
+                f"Your token is valid — the issue is on HuggingFace's free-tier inference servers."
             ),
             "model_used": model_name,
-            "method": "no_token_fallback",
+            "method": "api_failed",
             "latency_ms": round((time.time() - t0) * 1000, 1),
         }
 
-    # Context-grounded fallback: extract best sentence from context
-    sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', context) if len(s.strip()) > 15]
-    if not sentences:
-        return {"answer": context[:300], "model_used": model_name,
-                "method": "context_extraction", "latency_ms": round((time.time()-t0)*1000,1)}
-    q_words = set(re.findall(r'\b\w{4,}\b', question.lower()))
-    best, best_score = sentences[0], -1
-    for s in sentences:
-        score = len(q_words & set(re.findall(r'\b\w{4,}\b', s.lower())))
-        if score > best_score:
-            best_score, best = score, s
-    idx = sentences.index(best)
-    answer = best
-    if idx + 1 < len(sentences):
-        answer = best + " " + sentences[idx + 1]
-    return {"answer": answer.strip(), "model_used": model_name,
-            "method": "context_extraction", "latency_ms": round((time.time()-t0)*1000,1)}
+    # ── No token: context extraction or prompt to add token ───────────────────
+    if not is_standalone and context.strip():
+        sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', context) if len(s.strip()) > 15]
+        if sentences:
+            q_words = set(re.findall(r'\b\w{4,}\b', question.lower()))
+            best, best_score = sentences[0], -1
+            for s in sentences:
+                score = len(q_words & set(re.findall(r'\b\w{4,}\b', s.lower())))
+                if score > best_score:
+                    best_score, best = score, s
+            idx = sentences.index(best)
+            answer = best + (" " + sentences[idx+1] if idx+1 < len(sentences) else "")
+            return {"answer": answer.strip(), "model_used": "context-extraction",
+                    "method": "context_extraction", "latency_ms": round((time.time()-t0)*1000,1)}
+
+    return {
+        "answer": (
+            "🔑 Enter your HuggingFace token in the sidebar to get real LLM answers to any question — "
+            "general knowledge, technical topics, cricket, science, history, everything. "
+            "Get a free token at huggingface.co/settings/tokens"
+        ),
+        "model_used": model_name,
+        "method": "no_token",
+        "latency_ms": round((time.time() - t0) * 1000, 1),
+    }
 
 
 def run_detection(context, answer):
