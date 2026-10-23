@@ -410,7 +410,24 @@ PAGES = [
 
 with st.sidebar:
     st.markdown('<div style="font-family:\'IBM Plex Mono\',monospace;font-size:1.05rem;font-weight:600;color:#EEF2F8;padding:0.5rem 0 0.1rem 0;letter-spacing:-0.01em">AB2DETECT</div>', unsafe_allow_html=True)
-    st.markdown('<div style="font-family:\'IBM Plex Sans\',sans-serif;font-size:0.74rem;color:#5C6E82;margin-bottom:1.2rem">Hallucination Detection · RV University</div>', unsafe_allow_html=True)
+    st.markdown('<div style="font-family:\'IBM Plex Sans\',sans-serif;font-size:0.74rem;color:#5C6E82;margin-bottom:0.8rem">Hallucination Detection · RV University</div>', unsafe_allow_html=True)
+
+    # ── Global HuggingFace token ──────────────────────────────────────────────
+    _tok = st.text_input(
+        "🔑 HuggingFace Token",
+        value=st.session_state["shared_hf_token"],
+        type="password",
+        placeholder="hf_…  (enter once, used everywhere)",
+        key="sidebar_hf_token",
+    )
+    if _tok and _tok != st.session_state["shared_hf_token"]:
+        st.session_state["shared_hf_token"] = _tok
+        st.rerun()
+    if st.session_state["shared_hf_token"]:
+        st.markdown('<div style="font-family:\'IBM Plex Mono\',monospace;font-size:0.72rem;color:#1A7F4B;margin-bottom:0.8rem">✓ Token active — all features unlocked</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div style="font-family:\'IBM Plex Mono\',monospace;font-size:0.72rem;color:#5C6E82;margin-bottom:0.8rem">Enter token above to enable LLM generation</div>', unsafe_allow_html=True)
+    st.markdown("<hr style='border:none;border-top:1px solid #1A2535;margin:0.5rem 0 1rem 0'>", unsafe_allow_html=True)
 
     for name, sub in PAGES:
         if st.button(f"{name}  —  {sub}", key=f"nav_{name}", use_container_width=True):
@@ -696,29 +713,60 @@ def simulate_model_answer(question: str, model_name: str, context: str = "") -> 
 
 
 def auto_correct_answer(answer: str, context: str, spans: list) -> str:
-    """Replace hallucinated spans with closest context-grounded facts. Returns HTML."""
+    """Replace hallucinated spans with the best context-grounded facts. Returns HTML."""
     if not spans:
         return answer
-    # Extract all named entities and numbers from context as replacement candidates
+
+    # Split context into sentences for targeted search
+    ctx_sentences = [s.strip() for s in re.split(r'[.!?]', context) if len(s.strip()) > 5]
+    ctx_nums  = re.findall(r'\b\d[\d,\./%]*\b', context)
     ctx_named = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', context)
-    ctx_nums  = re.findall(r'\b\d[\d,\.]*\b', context)
-    ctx_facts = ctx_named + ctx_nums
+
+    def best_replacement(span: str) -> str:
+        is_num = bool(re.match(r'^[\d,\.]+$', span.replace(',', '').replace('.', '')))
+
+        if is_num and ctx_nums:
+            # Find context sentence nearest to this span's surroundings
+            span_pos = answer.lower().find(span.lower())
+            window = answer[max(0, span_pos-60):span_pos+60].lower()
+            best_sent = max(ctx_sentences, key=lambda s: sum(
+                1 for w in window.split() if w in s.lower()
+            ), default="")
+            nums_in_sent = re.findall(r'\b\d[\d,\./%]*\b', best_sent)
+            if nums_in_sent:
+                return nums_in_sent[0]
+            return ctx_nums[0]
+
+        # Named entity / text span: find context sentence with highest word overlap
+        span_words = set(span.lower().split())
+        span_pos = answer.lower().find(span.lower())
+        window_words = set(answer[max(0, span_pos-80):span_pos+80].lower().split())
+        query_words = span_words | window_words
+
+        def sent_score(s):
+            s_words = set(s.lower().split())
+            return len(s_words & query_words)
+
+        best_sent = max(ctx_sentences, key=sent_score, default="")
+        # Extract named entity or number from best sentence
+        names_in_sent = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', best_sent)
+        nums_in_sent = re.findall(r'\b\d[\d,\./%]*\b', best_sent)
+
+        if names_in_sent:
+            return names_in_sent[0]
+        if nums_in_sent:
+            return nums_in_sent[0]
+        if ctx_named:
+            return ctx_named[0]
+        return "[see context]"
 
     corrected = answer
-    for i, span in enumerate(spans):
-        # Pick replacement: prefer same type (number→number, name→name)
-        if re.match(r'^\d', span) and ctx_nums:
-            replacement = ctx_nums[i % len(ctx_nums)]
-        elif ctx_named:
-            replacement = ctx_named[i % len(ctx_named)]
-        elif ctx_facts:
-            replacement = ctx_facts[i % len(ctx_facts)]
-        else:
-            replacement = "verified"
-        # Replace in text and wrap in green HTML span (NOT markdown **)
+    for span in spans:
+        replacement = best_replacement(span)
         corrected = re.compile(re.escape(span), re.IGNORECASE).sub(
             f'<span style="color:#5FCA8E;font-weight:600;background:rgba(26,127,75,0.15);'
-            f'border-bottom:2px solid #1A7F4B;padding:0 2px;border-radius:2px">{replacement}</span>',
+            f'border-bottom:2px solid #1A7F4B;padding:0 2px;border-radius:2px" '
+            f'title="Was: {span}">{replacement}</span>',
             corrected, count=1
         )
     return corrected
@@ -1452,45 +1500,157 @@ elif page == "Detection":
 # ─────────────────────────────────────────────────────────────────────────────
 elif page == "Image":
     st.markdown('<div class="ab2-h1">Image Detection</div>', unsafe_allow_html=True)
-    st.markdown('<div class="ab2-sub">Upload a document image. EasyOCR extracts the text, which becomes your context for hallucination detection.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="ab2-sub">Upload any image — AB2DETECT extracts colors, themes, objects and text, builds a rich context, generates an LLM answer, then checks for hallucinations.</div>', unsafe_allow_html=True)
 
-    uploaded = st.file_uploader("Document image", type=["png","jpg","jpeg","webp"])
+    # ── helper: dominant colors via PIL quantization ──────────────────────────
+    def describe_colors(pil_img, n=6):
+        small = pil_img.convert("RGB").resize((120, 120))
+        palette = small.quantize(colors=n).convert("RGB")
+        cols = palette.getcolors(120*120)
+        if not cols:
+            return "various colors"
+        cols_sorted = sorted(cols, key=lambda x: -x[0])
+        def rgb_name(r, g, b):
+            mx = max(r, g, b); mn = min(r, g, b)
+            if mx < 60: return "dark/black"
+            if mn > 195: return "white/light"
+            if mx - mn < 30: return "grey"
+            if r > g and r > b: return "red/warm" if g > 80 else "red/dark"
+            if g > r and g > b: return "green"
+            if b > r and b > g: return "blue/cool"
+            if r > 160 and g > 130 and b < 80: return "yellow/golden"
+            if r > 160 and g < 100: return "orange/brown"
+            return "mixed"
+        names = []
+        for cnt, (r, g, b) in cols_sorted[:4]:
+            nm = rgb_name(r, g, b)
+            if nm not in names:
+                names.append(nm)
+        return ", ".join(names)
+
+    # ── helper: HF vision caption ─────────────────────────────────────────────
+    def hf_image_caption(pil_img, token):
+        import base64
+        buf2 = io.BytesIO()
+        pil_img.convert("RGB").save(buf2, format="JPEG", quality=85)
+        b64 = base64.b64encode(buf2.getvalue()).decode()
+        headers = {"Authorization": f"Bearer {token}"}
+        # Try BLIP captioning
+        for model in ["Salesforce/blip-image-captioning-large",
+                       "Salesforce/blip-image-captioning-base"]:
+            try:
+                resp = requests.post(
+                    f"https://api-inference.huggingface.co/models/{model}",
+                    headers=headers,
+                    json={"inputs": b64},
+                    timeout=20,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if isinstance(data, list) and data:
+                        return data[0].get("generated_text", ""), model
+                    if isinstance(data, dict) and "generated_text" in data:
+                        return data["generated_text"], model
+            except Exception:
+                pass
+        return "", ""
+
+    # ── helper: OCR text ─────────────────────────────────────────────────────
+    def extract_ocr_text(pil_img):
+        try:
+            import easyocr
+            buf3 = io.BytesIO()
+            pil_img.save(buf3, format='PNG')
+            reader = easyocr.Reader(['en'], gpu=False)
+            return " ".join([r[1] for r in reader.readtext(buf3.getvalue())])
+        except Exception:
+            return ""
+
+    uploaded = st.file_uploader("Upload image (photo, screenshot, document, chart…)", type=["png","jpg","jpeg","webp"])
     if uploaded:
         img = Image.open(uploaded)
-        ci, ct = st.columns(2)
+        ci, ct = st.columns([1, 1])
         with ci:
-            st.image(img, caption="Uploaded", use_column_width=True)
-        with ct:
-            with st.spinner("Extracting text with EasyOCR…"):
-                try:
-                    import easyocr
-                    reader = easyocr.Reader(['en'])
-                    buf = io.BytesIO()
-                    img.save(buf, format='PNG')
-                    extracted = " ".join([r[1] for r in reader.readtext(buf.getvalue())])
-                except Exception:
-                    extracted = "OCR unavailable. Paste context text below."
-            st.text_area("Extracted context", value=extracted, height=160)
+            st.image(img, caption="Uploaded image", use_column_width=True)
 
-        st.markdown('<hr class="ab2-rule">', unsafe_allow_html=True)
-        q_img = st.text_input("Question about this document")
-        a_img = st.text_area("LLM answer to check", height=100)
-        if st.button("Run detection"):
-            if a_img:
-                with st.spinner("Detecting…"):
-                    result = run_detection(extracted, a_img)
-                sc = "#DC3545" if result["is_hallucinated"] else "#1A7F4B"
-                sv = "Hallucinated" if result["is_hallucinated"] else "Supported"
-                st.markdown(f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:0.85rem;color:{sc};margin:0.5rem 0">{sv} · confidence {result["confidence"]:.2f} · {result["hall_count"]} spans</div>', unsafe_allow_html=True)
-                st.markdown(f'<div class="ab2-answer-box">{highlight_answer(a_img, result["spans"])}</div>', unsafe_allow_html=True)
+        with ct:
+            hf_tok = st.session_state.get("shared_hf_token", "")
+            if not hf_tok:
+                st.warning("Enter your HuggingFace token in the sidebar to enable AI image description.")
+
+            if st.button("🔍 Analyse Image", type="primary", use_container_width=True):
+                rich_parts = []
+
+                # 1. Visual description via HF
+                with st.spinner("Getting AI visual description…"):
+                    if hf_tok:
+                        caption, used_model = hf_image_caption(img, hf_tok)
+                        if caption:
+                            rich_parts.append(f"Visual description: {caption}")
+                            st.success(f"Caption ({used_model.split('/')[-1]}): {caption}")
+                        else:
+                            st.info("Vision API unavailable — using local analysis only.")
+                    else:
+                        st.info("No token — using local color/size analysis only.")
+
+                # 2. Color palette
+                with st.spinner("Analysing colors and layout…"):
+                    w, h = img.size
+                    color_desc = describe_colors(img)
+                    layout = "landscape" if w > h else ("portrait" if h > w else "square")
+                    size_desc = f"{w}×{h}px {layout}"
+                    rich_parts.append(f"Image dimensions: {size_desc}. Dominant colors: {color_desc}.")
+
+                # 3. OCR text
+                with st.spinner("Extracting any text in the image (OCR)…"):
+                    ocr_text = extract_ocr_text(img)
+                    if ocr_text.strip():
+                        rich_parts.append(f"Text found in image: {ocr_text}")
+                    else:
+                        rich_parts.append("No significant text detected in the image.")
+
+                full_context = " ".join(rich_parts)
+                st.session_state["img_context"] = full_context
+
+        # Show context and detection once analysis done
+        if "img_context" in st.session_state:
+            st.markdown('<hr class="ab2-rule">', unsafe_allow_html=True)
+            ctx_edit = st.text_area("📋 Rich image context (edit if needed)", value=st.session_state["img_context"], height=140, key="img_ctx_edit")
+
+            st.markdown('<div class="ab2-h2">Step 2 — Ask a question & check the answer</div>', unsafe_allow_html=True)
+            q_img = st.text_input("Your question about the image")
+            hf_tok2 = st.session_state.get("shared_hf_token", "")
+
+            if q_img and hf_tok2 and st.button("Generate answer with LLM", use_container_width=True):
+                with st.spinner("Generating answer…"):
+                    gen_answer = generate_answer_frontend(q_img, ctx_edit, hf_tok2)
+                st.session_state["img_gen_answer"] = gen_answer
+
+            a_img = st.text_area("LLM answer to check (auto-filled or paste your own)",
+                                  value=st.session_state.get("img_gen_answer", ""), height=100, key="img_answer")
+
+            if st.button("🔬 Run hallucination detection", type="primary"):
+                if a_img and ctx_edit:
+                    with st.spinner("Detecting…"):
+                        result = run_detection(ctx_edit, a_img)
+                    sc = "#DC3545" if result["is_hallucinated"] else "#1A7F4B"
+                    sv = "Hallucinated" if result["is_hallucinated"] else "Supported"
+                    st.markdown(f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:0.85rem;color:{sc};margin:0.5rem 0">{sv} · confidence {result["confidence"]:.2f} · {result["hall_count"]} spans flagged</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div class="ab2-answer-box">{highlight_answer(a_img, result["spans"])}</div>', unsafe_allow_html=True)
+                else:
+                    st.warning("Provide both an image context and an answer to check.")
     else:
+        # Clear stale session state when new image not yet uploaded
+        st.session_state.pop("img_context", None)
+        st.session_state.pop("img_gen_answer", None)
         st.markdown("""<div class="ab2-tile">
         <div class="ab2-tile-title">How it works</div>
         <ol class="ab2-steps" style="margin-top:0.5rem">
-        <li class="ab2-step"><span class="ab2-step-num">01</span><span class="ab2-step-text">Upload any PNG/JPG document, screenshot, or page scan</span></li>
-        <li class="ab2-step"><span class="ab2-step-num">02</span><span class="ab2-step-text">EasyOCR reads the text (supports printed English)</span></li>
-        <li class="ab2-step"><span class="ab2-step-num">03</span><span class="ab2-step-text">Extracted text becomes the retrieval context</span></li>
-        <li class="ab2-step"><span class="ab2-step-num">04</span><span class="ab2-step-text">Paste any LLM answer and run token-level detection</span></li>
+        <li class="ab2-step"><span class="ab2-step-num">01</span><span class="ab2-step-text">Upload any PNG/JPG — photo, screenshot, chart, document scan</span></li>
+        <li class="ab2-step"><span class="ab2-step-num">02</span><span class="ab2-step-text">AI vision model describes objects, scene, colors, themes</span></li>
+        <li class="ab2-step"><span class="ab2-step-num">03</span><span class="ab2-step-text">OCR extracts any text present in the image</span></li>
+        <li class="ab2-step"><span class="ab2-step-num">04</span><span class="ab2-step-text">Combined rich description becomes retrieval context</span></li>
+        <li class="ab2-step"><span class="ab2-step-num">05</span><span class="ab2-step-text">Ask a question → LLM answers → AB2DETECT checks for hallucinations</span></li>
         </ol></div>""", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1991,8 +2151,88 @@ elif page == "Cricket":
         with m3: st.markdown(f'<div class="ab2-met"><span class="ab2-met-val">{result["hall_count"]}/{result["token_count"]}</span><div class="ab2-met-lbl">flagged / total</div></div>', unsafe_allow_html=True)
 
     st.markdown('<hr class="ab2-rule">', unsafe_allow_html=True)
-    rows = [{"#": i+1, "Question": d["question"], "Hallucinated spans": ", ".join(d["hallucinated_spans"])} for i, d in enumerate(CRICKET_DATA)]
-    st.dataframe(pd.DataFrame(rows).set_index("#"), use_container_width=True)
+    rows = [{"#": i+1, "Question": d["question"], "Correct Answer": d["correct_answer"],
+             "Hallucinated Answer": d["hallucinated_answer"],
+             "Hallucinated spans": ", ".join(d["hallucinated_spans"])} for i, d in enumerate(CRICKET_DATA)]
+    df_cricket = pd.DataFrame(rows).set_index("#")
+    st.dataframe(df_cricket, use_container_width=True)
+
+    # ── Download options ─────────────────────────────────────────────────────
+    st.markdown('<div class="ab2-h2">Download dataset</div>', unsafe_allow_html=True)
+    dc1, dc2, dc3 = st.columns(3)
+
+    # CSV
+    csv_bytes = df_cricket.reset_index().to_csv(index=False).encode("utf-8")
+    with dc1:
+        st.download_button(
+            label="⬇ Download CSV",
+            data=csv_bytes,
+            file_name="ab2detect_cricket_dataset.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+
+    # Excel
+    from io import BytesIO
+    excel_buf = BytesIO()
+    with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
+        df_cricket.reset_index().to_excel(writer, index=False, sheet_name="CricketDataset")
+    excel_bytes = excel_buf.getvalue()
+    with dc2:
+        st.download_button(
+            label="⬇ Download Excel",
+            data=excel_bytes,
+            file_name="ab2detect_cricket_dataset.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+
+    # PDF (HTML-rendered via reportlab or simple HTML fallback)
+    def make_pdf_bytes(df):
+        try:
+            from reportlab.lib.pagesizes import A4, landscape
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+            from reportlab.lib.styles import getSampleStyleSheet
+            from reportlab.lib import colors
+            buf_pdf = BytesIO()
+            doc = SimpleDocTemplate(buf_pdf, pagesize=landscape(A4), topMargin=30, bottomMargin=30)
+            styles = getSampleStyleSheet()
+            elems = []
+            elems.append(Paragraph("AB2DETECT — Cricket Hallucination Dataset", styles["Title"]))
+            elems.append(Spacer(1, 12))
+            data_rows = [list(df.columns)] + [list(map(str, row)) for row in df.values]
+            tbl = Table(data_rows, repeatRows=1)
+            tbl.setStyle(TableStyle([
+                ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#0F1520")),
+                ("TEXTCOLOR",  (0,0), (-1,0), colors.white),
+                ("FONTNAME",   (0,0), (-1,0), "Helvetica-Bold"),
+                ("FONTSIZE",   (0,0), (-1,-1), 7),
+                ("GRID",       (0,0), (-1,-1), 0.5, colors.HexColor("#1A2535")),
+                ("BACKGROUND", (0,1), (-1,-1), colors.HexColor("#060A10")),
+                ("TEXTCOLOR",  (0,1), (-1,-1), colors.HexColor("#EEF2F8")),
+                ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.HexColor("#080C14"), colors.HexColor("#0F1520")]),
+                ("VALIGN",     (0,0), (-1,-1), "TOP"),
+                ("WORDWRAP",   (0,0), (-1,-1), True),
+            ]))
+            elems.append(tbl)
+            doc.build(elems)
+            return buf_pdf.getvalue()
+        except Exception:
+            # Fallback: simple HTML as PDF-ish download
+            html = "<html><body><h2>AB2DETECT Cricket Dataset</h2>" + df.reset_index().to_html(index=False) + "</body></html>"
+            return html.encode("utf-8")
+
+    pdf_bytes = make_pdf_bytes(df_cricket)
+    pdf_mime = "application/pdf" if pdf_bytes[:4] == b"%PDF" else "text/html"
+    pdf_ext  = "pdf" if pdf_mime == "application/pdf" else "html"
+    with dc3:
+        st.download_button(
+            label="⬇ Download PDF",
+            data=pdf_bytes,
+            file_name=f"ab2detect_cricket_dataset.{pdf_ext}",
+            mime=pdf_mime,
+            use_container_width=True,
+        )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # EXTENSION
