@@ -785,33 +785,26 @@ def plotly_dark(fig, height=280):
 # ─────────────────────────────────────────────────────────────────────────────
 # DATASETS
 # ─────────────────────────────────────────────────────────────────────────────
-CRICKET_DATA = [
-    {"question": "How many Test runs did Sachin Tendulkar score?",
-     "context": "Sachin Tendulkar scored 15,921 runs in Test cricket across 200 Test matches with a batting average of 53.78. He made his international debut in 1989 against Pakistan at the age of 16.",
-     "correct_answer": "Sachin Tendulkar scored 15,921 runs in 200 Test matches with an average of 53.78, debuting in 1989.",
-     "hallucinated_answer": "Sachin Tendulkar scored 18,000 runs in Test cricket across 220 matches with a batting average of 61.5, debuting in 1987.",
-     "hallucinated_spans": ["18,000", "220", "61.5", "1987"]},
-    {"question": "Who holds the record for most wickets in Test cricket?",
-     "context": "Muttiah Muralitharan of Sri Lanka holds the world record for most wickets in Test cricket with 800 wickets from 133 Tests. He retired in 2010.",
-     "correct_answer": "Muttiah Muralitharan holds the record with 800 Test wickets from 133 Tests, retiring in 2010.",
-     "hallucinated_answer": "Shane Warne holds the record with 850 wickets in 150 Test matches. He retired in 2011.",
-     "hallucinated_spans": ["Shane Warne", "850", "150", "2011"]},
-    {"question": "When was the first Cricket World Cup held?",
-     "context": "The first ICC Cricket World Cup was held in 1975 in England. West Indies won the inaugural tournament by defeating Australia in the final at Lord's Cricket Ground.",
-     "correct_answer": "The first Cricket World Cup was held in 1975 in England, won by West Indies who defeated Australia in the final.",
-     "hallucinated_answer": "The first Cricket World Cup was held in 1979 in Australia. West Indies won by defeating India in the final at Melbourne.",
-     "hallucinated_spans": ["1979", "Australia", "India", "Melbourne"]},
-    {"question": "How many ODI centuries has Virat Kohli scored?",
-     "context": "As of 2024, Virat Kohli has scored 50 centuries in One Day Internationals, making him the highest century scorer in ODI cricket history, surpassing Sachin Tendulkar's record of 49 ODI centuries.",
-     "correct_answer": "Virat Kohli has scored 50 ODI centuries, surpassing Sachin Tendulkar's record of 49 ODI centuries.",
-     "hallucinated_answer": "Virat Kohli has scored 55 ODI centuries, surpassing Ricky Ponting's record of 30 ODI centuries.",
-     "hallucinated_spans": ["55", "Ricky Ponting", "30"]},
-    {"question": "Which team won the 2023 ICC Cricket World Cup?",
-     "context": "Australia won the 2023 ICC Cricket World Cup held in India. They defeated India in the final played at Narendra Modi Stadium in Ahmedabad on November 19, 2023. Travis Head was named Player of the Match.",
-     "correct_answer": "Australia won the 2023 Cricket World Cup, defeating India in the final at Ahmedabad. Travis Head was Player of the Match.",
-     "hallucinated_answer": "India won the 2023 Cricket World Cup, defeating Australia in the final at Mumbai. Virat Kohli was named Player of the Match.",
-     "hallucinated_spans": ["India won", "Mumbai", "Virat Kohli"]},
-]
+@st.cache_data(show_spinner=False)
+def load_cricket_data():
+    """Load the full 15,000+ sample cricket dataset from JSON file."""
+    import os
+    dataset_path = os.path.join(os.path.dirname(__file__), "cricket_dataset.json")
+    try:
+        with open(dataset_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data
+    except Exception:
+        # Minimal fallback if file missing
+        return [
+            {"id":1,"question":"How many Test runs did Sachin Tendulkar score?",
+             "context":"Sachin Tendulkar of India scored 15,921 Test runs in 200 matches at an average of 53.78, debuting in 1989.",
+             "correct_answer":"Sachin Tendulkar scored 15,921 Test runs in 200 matches at an average of 53.78.",
+             "hallucinated_answer":"Sachin Tendulkar scored 18,000 Test runs in 220 matches at an average of 61.5.",
+             "hallucinated_spans":["18,000","220","61.5"]},
+        ]
+
+CRICKET_DATA = load_cricket_data()
 
 INDIAN_LANG_DATA = [
     # ── KANNADA ──
@@ -2124,13 +2117,35 @@ elif page == "Indian Lang":
 # ─────────────────────────────────────────────────────────────────────────────
 elif page == "Cricket":
     st.markdown('<div class="ab2-h1">Cricket Dataset</div>', unsafe_allow_html=True)
-    st.markdown('<div class="ab2-sub">Original cricket Q&amp;A evaluation dataset with annotated hallucination spans — a custom domain contribution beyond RAGTruth.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="ab2-sub">AB2DETECT original cricket hallucination dataset — 15,000+ QA pairs with span-level hallucination annotations across batting, bowling, World Cups, IPL and Test records.</div>', unsafe_allow_html=True)
+
+    _total = len(CRICKET_DATA)
+    _span_counts = [len(d["hallucinated_spans"]) for d in CRICKET_DATA]
+    _avg_spans = round(sum(_span_counts) / max(1, _total), 1)
     c1,c2,c3,c4 = st.columns(4)
-    for col, (v, l) in zip([c1,c2,c3,c4], [("5","samples"),("4","hallucination types"),("cricket","domain"),("span","annotation")]):
+    for col, (v, l) in zip([c1,c2,c3,c4], [
+        (f"{_total:,}", "total samples"),
+        (str(_avg_spans), "avg spans/sample"),
+        ("cricket", "domain"),
+        ("span", "annotation level"),
+    ]):
         with col: st.markdown(f'<div class="ab2-met"><span class="ab2-met-val">{v}</span><div class="ab2-met-lbl">{l}</div></div>', unsafe_allow_html=True)
 
-    idx = st.selectbox("Sample", range(len(CRICKET_DATA)), format_func=lambda i: f"{i+1}. {CRICKET_DATA[i]['question']}")
-    item = CRICKET_DATA[idx]
+    # Search + browse
+    search_q = st.text_input("🔍 Search samples by keyword", placeholder="e.g. Tendulkar, World Cup, wickets…")
+    if search_q.strip():
+        filtered_data = [d for d in CRICKET_DATA if search_q.lower() in d["question"].lower() or search_q.lower() in d["context"].lower()]
+        st.markdown(f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:0.75rem;color:#5C6E82;margin-bottom:0.5rem">{len(filtered_data):,} matches</div>', unsafe_allow_html=True)
+    else:
+        filtered_data = CRICKET_DATA
+
+    if not filtered_data:
+        st.warning("No matches found.")
+        filtered_data = CRICKET_DATA[:1]
+
+    idx = st.selectbox("Browse sample", range(len(filtered_data)),
+                       format_func=lambda i: f"#{filtered_data[i].get('id', i+1)}  {filtered_data[i]['question']}")
+    item = filtered_data[idx]
     st.markdown(f'<div class="ab2-tile"><div class="ab2-tile-title">Context</div><div class="ab2-tile-body">{item["context"]}</div></div>', unsafe_allow_html=True)
     co, ch = st.columns(2)
     with co:
@@ -2151,18 +2166,32 @@ elif page == "Cricket":
         with m3: st.markdown(f'<div class="ab2-met"><span class="ab2-met-val">{result["hall_count"]}/{result["token_count"]}</span><div class="ab2-met-lbl">flagged / total</div></div>', unsafe_allow_html=True)
 
     st.markdown('<hr class="ab2-rule">', unsafe_allow_html=True)
-    rows = [{"#": i+1, "Question": d["question"], "Correct Answer": d["correct_answer"],
-             "Hallucinated Answer": d["hallucinated_answer"],
-             "Hallucinated spans": ", ".join(d["hallucinated_spans"])} for i, d in enumerate(CRICKET_DATA)]
-    df_cricket = pd.DataFrame(rows).set_index("#")
-    st.dataframe(df_cricket, use_container_width=True)
+
+    @st.cache_data(show_spinner=False)
+    def build_cricket_df():
+        rows = [{"id": d.get("id", i+1), "Question": d["question"],
+                 "Correct Answer": d["correct_answer"],
+                 "Hallucinated Answer": d["hallucinated_answer"],
+                 "Hallucinated Spans": ", ".join(str(s) for s in d["hallucinated_spans"])}
+                for i, d in enumerate(CRICKET_DATA)]
+        return pd.DataFrame(rows).set_index("id")
+
+    df_cricket = build_cricket_df()
+    st.markdown(f'<div style="font-family:\'IBM Plex Mono\',monospace;font-size:0.75rem;color:#5C6E82;margin-bottom:0.4rem">Showing all {len(df_cricket):,} samples — use search above to filter</div>', unsafe_allow_html=True)
+    st.dataframe(df_cricket, use_container_width=True, height=380)
 
     # ── Download options ─────────────────────────────────────────────────────
     st.markdown('<div class="ab2-h2">Download dataset</div>', unsafe_allow_html=True)
     dc1, dc2, dc3 = st.columns(3)
 
-    # CSV
-    csv_bytes = df_cricket.reset_index().to_csv(index=False).encode("utf-8")
+    # CSV — load pre-generated file if available, else generate from df
+    import os as _os
+    _csv_path = _os.path.join(_os.path.dirname(__file__), "cricket_dataset.csv")
+    if _os.path.exists(_csv_path):
+        with open(_csv_path, "rb") as _f:
+            csv_bytes = _f.read()
+    else:
+        csv_bytes = df_cricket.reset_index().to_csv(index=False).encode("utf-8")
     with dc1:
         st.download_button(
             label="⬇ Download CSV",
