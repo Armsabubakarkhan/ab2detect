@@ -2173,58 +2173,61 @@ elif page == "Cricket":
         )
 
     # Excel
-    from io import BytesIO
-    excel_buf = BytesIO()
-    with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
-        df_cricket.reset_index().to_excel(writer, index=False, sheet_name="CricketDataset")
-    excel_bytes = excel_buf.getvalue()
+    try:
+        excel_buf = io.BytesIO()
+        with pd.ExcelWriter(excel_buf, engine="openpyxl") as writer:
+            df_cricket.reset_index().to_excel(writer, index=False, sheet_name="CricketDataset")
+        excel_bytes = excel_buf.getvalue()
+        excel_ok = True
+    except Exception:
+        excel_bytes = csv_bytes  # fallback to CSV bytes
+        excel_ok = False
     with dc2:
         st.download_button(
-            label="⬇ Download Excel",
+            label="⬇ Download Excel" if excel_ok else "⬇ Download Excel (CSV fallback)",
             data=excel_bytes,
-            file_name="ab2detect_cricket_dataset.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            file_name="ab2detect_cricket_dataset.xlsx" if excel_ok else "ab2detect_cricket_dataset.csv",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if excel_ok else "text/csv",
             use_container_width=True,
         )
 
-    # PDF (HTML-rendered via reportlab or simple HTML fallback)
+    # PDF — reportlab if available, else styled HTML fallback
     def make_pdf_bytes(df):
         try:
             from reportlab.lib.pagesizes import A4, landscape
             from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
             from reportlab.lib.styles import getSampleStyleSheet
-            from reportlab.lib import colors
-            buf_pdf = BytesIO()
+            from reportlab.lib import colors as rl_colors
+            buf_pdf = io.BytesIO()
             doc = SimpleDocTemplate(buf_pdf, pagesize=landscape(A4), topMargin=30, bottomMargin=30)
             styles = getSampleStyleSheet()
-            elems = []
-            elems.append(Paragraph("AB2DETECT — Cricket Hallucination Dataset", styles["Title"]))
-            elems.append(Spacer(1, 12))
-            data_rows = [list(df.columns)] + [list(map(str, row)) for row in df.values]
+            elems = [Paragraph("AB2DETECT — Cricket Hallucination Dataset", styles["Title"]), Spacer(1, 12)]
+            df_full = df.reset_index()
+            data_rows = [list(df_full.columns)] + [list(map(str, row)) for row in df_full.values]
             tbl = Table(data_rows, repeatRows=1)
             tbl.setStyle(TableStyle([
-                ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#0F1520")),
-                ("TEXTCOLOR",  (0,0), (-1,0), colors.white),
+                ("BACKGROUND", (0,0), (-1,0), rl_colors.HexColor("#0F1520")),
+                ("TEXTCOLOR",  (0,0), (-1,0), rl_colors.white),
                 ("FONTNAME",   (0,0), (-1,0), "Helvetica-Bold"),
                 ("FONTSIZE",   (0,0), (-1,-1), 7),
-                ("GRID",       (0,0), (-1,-1), 0.5, colors.HexColor("#1A2535")),
-                ("BACKGROUND", (0,1), (-1,-1), colors.HexColor("#060A10")),
-                ("TEXTCOLOR",  (0,1), (-1,-1), colors.HexColor("#EEF2F8")),
-                ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.HexColor("#080C14"), colors.HexColor("#0F1520")]),
+                ("GRID",       (0,0), (-1,-1), 0.5, rl_colors.HexColor("#1A2535")),
+                ("TEXTCOLOR",  (0,1), (-1,-1), rl_colors.black),
                 ("VALIGN",     (0,0), (-1,-1), "TOP"),
-                ("WORDWRAP",   (0,0), (-1,-1), True),
             ]))
             elems.append(tbl)
             doc.build(elems)
-            return buf_pdf.getvalue()
+            return buf_pdf.getvalue(), "pdf"
         except Exception:
-            # Fallback: simple HTML as PDF-ish download
-            html = "<html><body><h2>AB2DETECT Cricket Dataset</h2>" + df.reset_index().to_html(index=False) + "</body></html>"
-            return html.encode("utf-8")
+            html = ("<html><head><style>body{font-family:Arial,sans-serif;padding:20px}"
+                    "table{border-collapse:collapse;width:100%}th{background:#0F1520;color:white}"
+                    "td,th{border:1px solid #ccc;padding:6px 10px;font-size:12px}"
+                    "tr:nth-child(even){background:#f5f5f5}</style></head><body>"
+                    "<h2>AB2DETECT &mdash; Cricket Hallucination Dataset</h2>"
+                    + df.reset_index().to_html(index=False, border=0) + "</body></html>")
+            return html.encode("utf-8"), "html"
 
-    pdf_bytes = make_pdf_bytes(df_cricket)
-    pdf_mime = "application/pdf" if pdf_bytes[:4] == b"%PDF" else "text/html"
-    pdf_ext  = "pdf" if pdf_mime == "application/pdf" else "html"
+    pdf_bytes, pdf_ext = make_pdf_bytes(df_cricket)
+    pdf_mime = "application/pdf" if pdf_ext == "pdf" else "text/html"
     with dc3:
         st.download_button(
             label="⬇ Download PDF",
