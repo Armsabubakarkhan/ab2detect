@@ -254,6 +254,26 @@ Interactive docs: `http://localhost:8000/docs`
 
 ---
 
+## 🏆 IEEE Certificate — RICE 2026
+
+<div align="center">
+
+![IEEE RICE 2026 Certificate](https://raw.githubusercontent.com/Armsabubakarkhan/ab2_detect/main/certificate.jpg)
+
+**Certificate of Participation — IEEE RICE 2026**
+
+**Abubakar Khan** · Paper ID #950743 · Certificate No. RICE26-PAR-950743-2
+
+*Presented at Session S55 – Language, Speech and Sign Processing – IV*
+
+*6 November 2026 · CMR Engineering College, Hyderabad*
+
+*IEEE 11th International Conference on Research in Intelligent Computing in Engineering · IEEE Conference Record #71332*
+
+</div>
+
+---
+
 ## 📄 IEEE Paper — RICE 2026
 
 **Title:** *AB2DETECT: Token-Span Hallucination Detection for Retrieval-Augmented Generation Pipelines using Fine-Tuned ModernBERT*
