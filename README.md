@@ -28,7 +28,7 @@ The project was developed by **Abubakar Khan** (1RV24CS003) and **Abhishek D Nag
 
 AB2DETECT solves this with a **lightweight, fast, and open-source token-span hallucination detector** fine-tuned on the RAGTruth benchmark. It identifies the exact words and phrases in an LLM-generated answer that are unsupported by the source context — and automatically corrects them. The system is deployed as a Streamlit web application, a FastAPI backend, and a Chrome browser extension.
 
-The work culminated in an **IEEE research paper** submitted to **RICE 2026** (Recent Innovations in Computer Engineering), claiming the first use of ModernBERT for span-level RAG hallucination detection, achieving **68.4% span F1** — a new state-of-the-art for open models on the RAGTruth benchmark.
+The work culminated in an **IEEE research paper accepted and presented at RICE 2026** (IEEE 11th International Conference on Research in Intelligent Computing in Engineering), achieving **68.4% span F1** on the RAGTruth benchmark — the highest reported score among open-source models at the time of submission, and, to our knowledge, the first application of ModernBERT to span-level hallucination detection in RAG pipelines.
 
 ---
 
@@ -278,13 +278,13 @@ Interactive docs: `http://localhost:8000/docs`
 
 **Title:** *AB2DETECT: Token-Span Hallucination Detection for Retrieval-Augmented Generation Pipelines using Fine-Tuned ModernBERT*
 
-**Venue:** RICE 2026 — Recent Innovations in Computer Engineering (IEEE-indexed)
+**Venue:** IEEE RICE 2026 — IEEE 11th International Conference on Research in Intelligent Computing in Engineering · Accepted & Presented · 6 November 2026
 
 **Authors:** Abubakar Khan · Abhishek D Nagoor · Dr. Ramakrishnan Varadharajan
 
 **Novel Contributions:**
-1. First application of ModernBERT to span-level hallucination detection in RAG pipelines
-2. State-of-the-art 68.4% span F1 on RAGTruth for open-source models
+1. To our knowledge, the first application of ModernBERT to span-level hallucination detection in RAG pipelines
+2. 68.4% span F1 on RAGTruth — highest reported among open-source models at time of submission
 3. End-to-end auto-correction pipeline with 43% hallucination reduction
 4. AB2DETECT Cricket Dataset — first hallucination benchmark for Indian cricket domain
 
